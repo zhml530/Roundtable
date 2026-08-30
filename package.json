@@ -31,7 +31,7 @@
     "dev:desktop": "pnpm build:server && node scripts/dev-desktop.mjs",
     "build": "tsc -b && tsc -p tsconfig.server.json && vite build",
     "typecheck": "tsc -b && tsc -p tsconfig.server.json",
-    "test": "node scripts/test-floor.mjs && pnpm broker:test && pnpm test:updater && pnpm test:package-link",
+    "test": "node scripts/test-floor.mjs && pnpm test:updater && pnpm test:package-link",
     "test:updater": "node --test electron/updater-coordinator.node-test.mjs",
     "test:package-link": "node --test electron/package-link.node-test.mjs",
     "bench:observation": "node --experimental-strip-types scripts/bench-observation.ts",
@@ -48,11 +48,7 @@
     "package:linux": "pnpm package:prepare && electron-builder --linux --x64 --publish never",
     "smoke:linux-package": "node scripts/run-linux-package-smoke.mjs",
     "package:linux:dir": "pnpm package:prepare && electron-builder --linux dir --x64 --publish never",
-    "package": "pnpm package:mac",
-    "broker:types": "wrangler types --config cloudflare/composio-broker/wrangler.jsonc cloudflare/composio-broker/worker-configuration.d.ts",
-    "broker:check": "pnpm broker:types && tsc -p cloudflare/composio-broker/tsconfig.json",
-    "broker:test": "vitest run --config cloudflare/composio-broker/vitest.config.ts",
-    "broker:deploy": "wrangler deploy --config cloudflare/composio-broker/wrangler.jsonc"
+    "package": "pnpm package:mac"
   },
   "dependencies": {
     "clsx": "^2.1.1",
@@ -83,7 +79,6 @@
     "tailwindcss": "^4.1.11",
     "typescript": "^5.8.3",
     "vite": "^7.1.0",
-    "vitest": "^4.1.10",
-    "wrangler": "4.123.0"
+    "vitest": "^4.1.10"
   }
 }
