@@ -1,0 +1,87 @@
+import { createRequire } from "node:module";
+import { describe, expect, it } from "vitest";
+
+const require = createRequire(import.meta.url);
+const {
+  desktopCapabilities,
+  linuxSession,
+  nativeDesktopActions,
+} = require("./capabilities.cjs");
+
+describe("desktop capabilities", () => {
+  it("keeps Apple permissions, Settings, and speech actions unreachable on Linux", () => {
+    expect(nativeDesktopActions("linux")).toEqual({
+      appleMediaPermissions: false,
+      applePrivacySettings: false,
+      appleSpeech: false,
+    });
+    expect(nativeDesktopActions("win32")).toEqual(nativeDesktopActions("linux"));
+    expect(nativeDesktopActions("darwin")).toEqual({
+      appleMediaPermissions: true,
+      applePrivacySettings: true,
+      appleSpeech: true,
+    });
+  });
+
+  it("reports macOS native features independently", () => {
+    const capabilities = desktopCapabilities({
+      platform: "darwin",
+      packaged: true,
+    });
+
+    expect(capabilities).toMatchObject({
+      host: { platform: "darwin", label: "macOS", session: "unknown", packaged: true },
+      windowChrome: "mac-inset",
+      screenPreview: { available: true, interaction: "direct" },
+      dictation: { available: true, engine: "apple-speech", onDevice: true },
+    });
+  });
+
+  it.each(["win32", "freebsd"])("fails closed on %s", (platform) => {
+    const capabilities = desktopCapabilities({
+      platform,
+      env: { DISPLAY: ":0" },
+    });
+
+    expect(capabilities.windowChrome).toBe("native");
+    expect(capabilities.screenPreview.available).toBe(false);
+    expect(capabilities.dictation.available).toBe(false);
+  });
+
+  it("offers direct Xorg preview", () => {
+    const capabilities = desktopCapabilities({
+      platform: "linux",
+      env: { XDG_SESSION_TYPE: "x11", DISPLAY: ":0" },
+    });
+
+    expect(capabilities.screenPreview).toEqual({ available: true, interaction: "direct" });
+  });
+
+  it("offers portal-mediated Wayland preview and fails closed when headless", () => {
+    expect(
+      desktopCapabilities({
+        platform: "linux",
+        env: { XDG_SESSION_TYPE: "wayland", WAYLAND_DISPLAY: "wayland-0", DISPLAY: ":0" },
+      }).screenPreview,
+    ).toEqual({ available: true, interaction: "portal-picker" });
+    expect(desktopCapabilities({ platform: "linux", env: {} }).screenPreview).toEqual({
+      available: false,
+      interaction: "none",
+      reasonCode: "headless-session",
+    });
+  });
+
+  it("detects Wayland before XWayland and distinguishes X11 and headless Linux", () => {
+    expect(linuxSession("linux", { WAYLAND_DISPLAY: "wayland-0", DISPLAY: ":0" })).toBe("wayland");
+    expect(
+      linuxSession("linux", {
+        XDG_SESSION_TYPE: "x11",
+        WAYLAND_DISPLAY: "wayland-0",
+        DISPLAY: ":0",
+      }),
+    ).toBe("wayland");
+    expect(linuxSession("linux", { XDG_SESSION_TYPE: "x11", DISPLAY: ":0" })).toBe("x11");
+    expect(linuxSession("linux", {})).toBe("headless");
+  });
+
+});

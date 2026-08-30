@@ -1,0 +1,26 @@
+---
+title: Security model
+description: The boundaries that keep agents, credentials, and computers scoped.
+icon: ShieldCheck
+---
+
+Roundtable is designed around a local owner, explicit capabilities, and narrow process boundaries. Local-first does not mean risk-free: an agent with tool or computer access can still act on the resources you grant it.
+
+## Core boundaries
+
+- The Electron utility process owns agent processes and communicates with the main process over typed IPC.
+- The renderer receives configured-or-not credential state, not secret values.
+- Provider-specific credentials are injected only into the process that needs them.
+- Risky actions become approval cards rather than implicit permission.
+- Box cloud computers are validated before reuse.
+- Local screen preview is user-initiated and view-only.
+
+## Your responsibility
+
+- Review approvals, especially shell commands, file writes, and computer actions.
+- Use dedicated environments for untrusted or destructive work.
+- Keep provider accounts scoped to what a bot needs.
+- Keep Roundtable and agent CLIs updated.
+
+Security reports should be filed through the repository's documented security channel rather than disclosed in a public issue before a fix is available.
+

@@ -1,0 +1,51 @@
+---
+title: Roundtable documentation
+description: Build a local team of AI bots that can collaborate, use tools, and keep working on a schedule.
+icon: BookOpen
+---
+
+<span className="omb-kicker">Local-first agent workspace</span>
+
+Roundtable turns agent CLIs into a familiar desktop chat app. Each bot can have its own model, instructions, working folder, avatar, and recurring work.
+
+<div className="omb-stat-row">
+  <div className="omb-stat"><strong>Many engines</strong><span>Claude, Codex, Grok, Cursor, local models, and more</span></div>
+  <div className="omb-stat"><strong>Real tools</strong><span>Files, terminals, browsers, and optional cloud desktops</span></div>
+  <div className="omb-stat"><strong>Your machine</strong><span>Local data and bring-your-own agent subscriptions</span></div>
+</div>
+
+<ProductScreenshot name="docs-fresh-bot" alt="A new Roundtable bot named Bramble asking what it should help with" caption="A clean first-run bot. Each conversation belongs to a real agent process, not a simulated contact." />
+
+<Cards>
+  <Card title="Install Roundtable" href="/docs/getting-started/installation" description="Download a signed build or run the app from source." />
+  <Card title="Create your first bot" href="/docs/getting-started/first-bot" description="Choose an engine, give it a working folder, and send a task." />
+  <Card title="Coordinate a team" href="/docs/features/chat-and-teams" description="Put several bots into a shared channel." />
+  <Card title="Give it a computer" href="/docs/computers" description="Use an optional Box cloud desktop or preview your screen." />
+</Cards>
+
+## How the pieces fit
+
+| Layer | What it does | Where to configure it |
+|---|---|---|
+| **Bot** | Holds the identity, conversation, memory, and defaults | Bot settings |
+| **Agent engine** | Runs the reasoning loop and tools | Model picker and App settings |
+| **Working folder** | Gives the bot project context and a safe place to work | Bot settings |
+| **Cloud computer** | Gives supported engines isolated browser and desktop tools | App settings |
+| **Automation** | Runs a task later, on a schedule, or from a webhook | Automations |
+
+## Choose your path
+
+| I want to… | Start here |
+|---|---|
+| Understand the app in five minutes | [Quick tour](./getting-started/quick-tour.mdx) |
+| Pick Claude, Codex, Cursor, Grok, or a local model | [Agent engines](./providers/index.mdx) |
+| Organize bots, tasks, rooms, and delegations | [Bots and tasks](./features/bots-and-tasks.mdx) |
+| Configure isolated browser or desktop tools | [Cloud computers](./computers/index.mdx) |
+| Run work every morning | [Automations](./features/automation.mdx) |
+| Back up or move my data | [Data and backups](./self-hosting/data-and-backups.mdx) |
+| Build from source or contribute | [Contributing](./contributing/index.mdx) |
+
+<Callout type="info" title="Docs track current behavior">
+  Proposed or unfinished work stays in GitHub issues until it lands. These pages describe the current Roundtable tree.
+</Callout>
+

@@ -1,0 +1,84 @@
+// Bundle each harness-server entry point into a self-contained ESM file.
+//
+// Why this exists: the packaged app ships ZERO node_modules (see the files:
+// exclusion in electron-builder.yml), so anything the server imports by bare
+// specifier has to be inlined — `tsc` only transpiles, it leaves
+// `import { z } from "zod"` verbatim and the packaged server dies at startup
+// with ERR_MODULE_NOT_FOUND. That shipped once, in 0.1.24.
+//
+// Bundling every entry point rather than only index.ts is deliberate: the
+// proxies are spawned as their own processes and today import nothing from
+// node_modules, but nothing stops the next one from doing so, and the failure
+// is invisible until a packaged build is actually launched.
+//
+// Entry points must keep their exact relative paths under dist-server — the
+// server locates each proxy by path (server/index.ts:108,
+// container-computer.ts:773, drivers/acp/core.ts:43), preferring the .ts in
+// dev and falling back to the sibling .js in the packaged tree. outbase keeps
+// drivers/ nested; import.meta.url still resolves to the same location, so
+// that lookup is unaffected.
+import { build } from "esbuild";
+import { copyFileSync, mkdirSync, rmSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const server = join(root, "server");
+
+// yaml's Node export is CommonJS and contains dynamic requires that cannot run
+// after it is inlined into our ESM-only packaged server. Its browser export is
+// the same pure-JS parser without those Node shims, so resolve only this package
+// to that entry while leaving every other dependency on the Node condition.
+const yamlEsmPlugin = {
+  name: "yaml-esm",
+  setup(build) {
+    build.onResolve({ filter: /^yaml$/ }, () => ({
+      path: join(root, "node_modules", "yaml", "browser", "index.js"),
+    }));
+  },
+};
+
+// Every file run as its own process. Keep in sync with the spawn sites above.
+const ENTRY_POINTS = [
+  "ipc-entry.ts",
+  // The packaged smoke probe imports this manifest directly. Importing the
+  // shared avatar contract widens TypeScript's inferred emit root to the repo,
+  // so tsc may place its copy under dist-server/server/. Bundle an explicit
+  // root sibling to keep the packaged runtime contract stable. The Linux
+  // package smoke probe imports this manifest directly.
+  "proxy-paths.ts",
+  "computer-proxy.ts",
+  "permission-proxy.ts",
+  "connector-proxy.ts",
+  "drivers/agents-proxy.ts",
+  "drivers/dweb-proxy.ts",
+];
+
+// Pre-IPC builds emitted a standalone HTTP host. Never let a stale copy ride
+// into a desktop package after switching the runtime to ipc-entry.js.
+rmSync(join(root, "dist-server", "index.js"), { force: true });
+
+await build({
+  entryPoints: ENTRY_POINTS.map((entry) => join(server, entry)),
+  bundle: true,
+  platform: "node",
+  target: "node20",
+  format: "esm",
+  outbase: server,
+  outdir: join(root, "dist-server"),
+  // Written after tsc, replacing its output for these entry points.
+  allowOverwrite: true,
+  logLevel: "info",
+  plugins: [yamlEsmPlugin],
+});
+
+// pi-mcp-extension.ts is NOT an Roundtable entry point: it is loaded by the
+// external `pi` process (pi's own jiti), which resolves its
+// @earendil-works/pi-coding-agent and typebox imports from pi's install. Ship
+// it verbatim as .ts so the packaged app has it too — never bundle it, or
+// esbuild would inline pi's packages and the extension would stop loading.
+const piMcpExtSrc = join(server, "drivers", "pi-mcp-extension.ts");
+const piMcpExtDest = join(root, "dist-server", "drivers", "pi-mcp-extension.ts");
+mkdirSync(dirname(piMcpExtDest), { recursive: true });
+copyFileSync(piMcpExtSrc, piMcpExtDest);
+

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>CFBundleDisplayName</key>
+    <string>Roundtable</string>
+    <key>CFBundleExecutable</key>
+    <string>speech-helper</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.Roundtable.app.speech-helper</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>Roundtable Speech</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>LSBackgroundOnly</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Roundtable listens while you dictate messages or talk to a bot.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Roundtable converts your speech into text during dictation and calls.</string>
+  </dict>
+</plist>
+

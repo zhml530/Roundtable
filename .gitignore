@@ -1,0 +1,23 @@
+node_modules
+.worktrees/
+dist
+dist-electron
+dist-native
+dist-server
+*.local
+.DS_Store
+*.tsbuildinfo
+electron/resources/speech-helper
+electron/resources/Roundtable Speech.app
+electron/resources/Roundtable Recorder.app
+release
+.omb-scratch
+.wrangler/
+.dev.vars
+.dev.vars.*
+cloudflare/composio-broker/worker-configuration.d.ts
+.claude/worktrees/
+.vercel/
+.pi/
+.pnpm/
+.pnpm-store/

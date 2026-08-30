@@ -1,0 +1,150 @@
+appId: com.Roundtable.app
+productName: Roundtable
+artifactName: Roundtable-${version}-${arch}.${ext}
+
+protocols:
+  - name: Roundtable package install
+    schemes: [Roundtable]
+
+# In-app auto-update reads latest-mac.yml + the .zip (macOS) or latest.yml +
+# the NSIS .exe (Windows) from this public source repository. Public means no
+# token is needed on users' machines. Baked into
+# app-update.yml; both metadata files are emitted here even with
+# --publish never, and must be uploaded to the GitHub release alongside the
+# artifacts — a release missing latest.yml leaves every Windows install
+# stranded on its installed version.
+publish:
+  - provider: github
+    owner: zhml530
+    repo: Roundtable
+
+directories:
+  buildResources: build
+  output: release
+
+# The app is three self-contained pieces, none needing node_modules at
+# runtime: the Electron main/preload (plain .mjs/.cjs), the built UI
+# (Vite → ui/), and the compiled harness server (tsc → server/), both
+# shipped in Resources and run on Electron's own Node via
+# ELECTRON_RUN_AS_NODE (the agentcal-hq pattern).
+files:
+  - electron/**
+  - "!electron/**/*.test.*"
+  - "!electron/resources/speech-helper"
+  - "!electron/resources/speech-helper.swift"
+  - "!electron/resources/speech-helper-Info.plist"
+  - "!electron/resources/Roundtable Speech.app/**"
+  - "!electron/resources/recorder-helper"
+  - "!electron/resources/recorder-helper.swift"
+  - "!electron/resources/recorder-helper-Info.plist"
+  - "!electron/resources/Roundtable Recorder.app/**"
+  - "!**/node_modules/**"
+  - package.json
+
+asar: true
+
+extraResources:
+  # Ship the app's own license terms in every desktop distribution.
+  - from: LICENSE
+    to: licenses/Roundtable-LICENSE.txt
+  - from: NOTICE
+    to: licenses/Roundtable-NOTICE.txt
+  - from: dist
+    to: ui
+  - from: dist-server
+    to: server
+  - from: skills
+    to: skills
+mac:
+  # Two single-arch artifacts rather than one universal binary: the app is
+  # ~177 MB per arch, and universal would make every user download both halves.
+  # electron-updater picks by filename (arm64-marked files on Apple silicon,
+  # unmarked ones on Intel), so latest-mac.yml must list all four files.
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+  icon: build/icon.icns
+  category: public.app-category.productivity
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # the dictation helper is a signed background app — Windows and Linux never see it
+  extraResources:
+    - from: electron/resources/Roundtable Speech.app
+      to: Roundtable Speech.app
+    - from: electron/resources/Roundtable Recorder.app
+      to: Roundtable Recorder.app
+  extendInfo:
+    NSMicrophoneUsageDescription: Roundtable uses the microphone for voice dictation into the composer.
+    NSSpeechRecognitionUsageDescription: Roundtable transcribes your voice on-device to type messages for you.
+    NSScreenCaptureUsageDescription: Roundtable uses Screen Recording for the view-only screen preview.
+  # Notarization runs manually after the build (notarytool + staple),
+  # mirroring the BlueyLite ship_release.sh flow.
+  notarize: false
+
+dmg:
+  sign: true
+  # ${arch} is load-bearing: without it the x64 dmg silently overwrites
+  # the arm64 one when both arches build (this section overrides both the
+  # top-level and mac-level artifactName, so it must carry the arch itself)
+  artifactName: Roundtable-${version}-${arch}.dmg
+
+win:
+  target:
+    - target: nsis
+      arch: x64
+    - target: zip
+      arch: x64
+  icon: build/icon.ico
+  # No signing config yet (would go under win.signtoolOptions or
+  # win.azureSignOptions — eb 26 nests it, there is no top-level
+  # win.certificateFile). The installer is unsigned, so SmartScreen shows
+  # "unknown publisher" on first run (README says so). verifyUpdateCodeSignature
+  # defaults true, but electron-updater skips the check when app-update.yml
+  # carries no publisherName — so auto-update still works today. Do NOT set
+  # publisherName without actually signing, or every update is rejected as
+  # untrusted; and once signed, keep the cert subject stable (or list both old
+  # and new in publisherName) or you strand already-installed users.
+
+nsis:
+  oneClick: true
+  perMachine: false
+  shortcutName: Roundtable
+  # Versioned, like the .dmg. The README's /latest/download/ button needs a
+  # STABLE filename, so ship a second copy named Roundtable-setup.exe on the
+  # release — the same trick as Roundtable.dmg beside Roundtable-${version}.dmg.
+  artifactName: Roundtable-${version}-setup.${ext}
+
+linux:
+  target:
+    - target: AppImage
+      arch: x64
+    - target: deb
+      arch: x64
+  # Keep the vector source in the freedesktop scalable icon hierarchy. A
+  # lone 1024px PNG is not indexed by GNOME's hicolor theme on Ubuntu 24.04.
+  icon: build/icon.svg
+  category: Utility
+  executableName: Roundtable
+  synopsis: Your own team of AI bots, in a chat app
+  description: A local-first chat app for running a team of AI agents.
+  maintainer: Roundtable contributors
+  vendor: Roundtable
+  syncDesktopName: true
+  desktop:
+    entry:
+      Name: Roundtable
+      Comment: Your own team of AI bots, in a chat app
+      Keywords: AI;Agents;Chat;Productivity;
+
+deb:
+  packageCategory: utils
+  priority: optional
+
+# Static AppImage runtime: Ubuntu 24.04 can launch it without legacy FUSE 2.
+toolsets:
+  appimage: "1.0.3"
+

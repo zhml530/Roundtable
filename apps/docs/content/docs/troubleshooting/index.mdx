@@ -1,0 +1,26 @@
+---
+title: Troubleshooting
+description: Find the failing layer first, then apply the smallest safe fix.
+icon: Wrench
+---
+
+Most Roundtable failures come from one of three layers: the desktop app, a local agent CLI, or an optional computer backend.
+
+<Cards>
+  <Card title="App startup and ports" href="/docs/troubleshooting/startup-and-ports" description="App will not open, local server is unavailable, or a port is occupied." />
+  <Card title="Agent engines" href="/docs/providers/troubleshooting" description="CLI missing, model unavailable, authentication failure, or reconnect loop." />
+  <Card title="Desktop updates" href="/docs/troubleshooting/updates" description="Download spins, restart does nothing, or the new version does not launch." />
+</Cards>
+
+## Collect useful evidence
+
+Before opening an issue, record:
+
+- Roundtable version and operating system;
+- selected engine and model;
+- the exact visible error, not only “it failed”;
+- whether the same agent CLI works directly in a terminal;
+- whether restarting only the affected task changes the result.
+
+Never post API keys, OAuth callback URLs, bearer tokens, or the contents of secure credential files.
+

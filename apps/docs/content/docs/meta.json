@@ -1,0 +1,16 @@
+{
+  "title": "Roundtable",
+  "root": true,
+  "pages": [
+    "index",
+    "getting-started",
+    "features",
+    "providers",
+    "computers",
+    "self-hosting",
+    "security",
+    "troubleshooting",
+    "contributing"
+  ]
+}
+

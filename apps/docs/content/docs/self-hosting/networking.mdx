@@ -1,0 +1,24 @@
+---
+title: Process boundaries
+description: Understand the desktop IPC and external network boundaries.
+icon: Network
+---
+
+Roundtable does not expose a local HTTP API. Desktop requests cross explicit Electron process boundaries, while agent engines continue to use ACP.
+
+```mermaid
+flowchart LR
+  UI[Renderer UI] -->|typed preload API| Main[Electron main process]
+  Main -->|request and event IPC| Orchestration[Utility process]
+  Orchestration -->|ACP| Agents[Agent CLIs]
+  Orchestration -->|private named pipe or Unix socket| Helpers[Provider helpers]
+```
+
+## Network access
+
+Provider CLIs and optional computer services can still make outbound internet requests. Those requests are initiated by the desktop-owned orchestration process or its scoped helpers; they do not require an inbound listener.
+
+## Development UI
+
+Vite serves the renderer during development. This development asset server is not the orchestration transport and is absent from packaged builds, which load UI files directly from disk.
+
