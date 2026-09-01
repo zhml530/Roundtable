@@ -28,6 +28,7 @@ import { GroupCallOverlay } from "./GroupCallView";
 import { ReactionBar, ReactionChips } from "./Reactions";
 import { ApprovalCard } from "./ApprovalCard";
 import { ManageMembersPanel } from "./ManageMembersPanel";
+import { CoordinatorMissionControl } from "./CoordinatorMissionControl";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { cn } from "@/lib/cn";
 import { useFocusMessage } from "@/lib/focus-message";
@@ -1041,6 +1042,8 @@ export function GroupView({ group }: { group: Group }) {
           </div>
         );
       })()}
+
+      {!setupPending && !group.dm && <CoordinatorMissionControl group={group} />}
 
       {/* Transcript */}
       <div

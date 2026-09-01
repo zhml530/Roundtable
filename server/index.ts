@@ -122,6 +122,7 @@ import { SPAWNED_PROXIES } from "./proxy-paths.ts";
 import { loadBundledSkills, loadUserSkills, mergeSkills, renderSkillInstructions, selectBundledSkills } from "./skill-library.ts";
 import { installedPlaybookInstructions } from "./installed-playbooks.ts";
 import { createBotPackageExport } from "./package-export.ts";
+import { CoordinationManager } from "./coordination.ts";
 
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
 const WEBHOOK_PORT = Number(process.env.OMB_WEBHOOK_PORT || PORT + 1);
@@ -293,6 +294,8 @@ const publicBot = (bot: NonNullable<ReturnType<typeof store.bot>>) => ({
   tasks: store.tasks(bot.id).map(wireTask),
 });
 
+let coordination: CoordinationManager | null = null;
+
 // The store tells us what it wrote; this is the ONE place that turns those
 // into SSE frames. No mutation path can persist without emitting — the
 // property holds by construction, not by every call site remembering to
@@ -320,7 +323,7 @@ store.onChange((change) => {
       break;
     case "group": {
       const group = store.group(change.groupId);
-      if (group) broadcast({ kind: "group", group });
+      if (group) broadcast({ kind: "group", group: { ...group, coordination: coordination?.latest(group.id) } });
       break;
     }
     case "group.deleted":
@@ -1589,6 +1592,84 @@ routines = new RoutineManager({
   },
 });
 routines.start();
+
+// ── Coordinator: OMA plans/schedules; the existing Roundtable harness is
+// still the only executor. Every DAG node gets a normal detached bot task, so
+// provider sessions, approvals, tool policy, transcripts and task navigation
+// retain exactly the same ownership as an ordinary user-started turn.
+coordination = new CoordinationManager({
+  emit: broadcast,
+  groupBots: (groupId) => {
+    const group = store.group(groupId);
+    if (!group) return [];
+    return group.memberIds.flatMap((botId) => {
+      const bot = store.bot(botId);
+      return bot ? [{ id: bot.id, name: bot.name, title: bot.title, description: bot.description, model: bot.modelSelection.model }] : [];
+    });
+  },
+  createTask: (botId, title) => {
+    const task = store.createTask(botId, title, false);
+    const bot = store.bot(botId);
+    if (task && bot) broadcast({ kind: "bot", bot: publicBot(bot) });
+    return task;
+  },
+  runBotTurn: ({ botId, threadId, prompt, signal }) => new Promise((resolve, reject) => {
+    let text = "";
+    let runtimeError: string | undefined;
+    let settled = false;
+    const finish = (error?: Error, usage?: { input: number; output: number }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unsubscribe();
+      signal.removeEventListener("abort", abort);
+      if (error) reject(error);
+      else resolve({ text: text || "(the bot completed without a text response)", usage });
+    };
+    const unsubscribe = bus.subscribe((event: RuntimeEvent) => {
+      if (event.threadId !== threadId) return;
+      if (event.type === "item.completed" && event.itemType === "assistant_text") {
+        text += `${text ? "\n" : ""}${event.text}`;
+      } else if (event.type === "turn.completed") {
+        finish(event.ok ? undefined : new Error(runtimeError || event.stopReason || "The bot turn failed"), event.usage);
+      } else if (event.type === "runtime.error") {
+        // Provider runtimes normally follow this diagnostic with turn.completed.
+        // Wait for that terminal boundary so OMA never dispatches another task
+        // to a bot whose failed process is still settling.
+        runtimeError = event.message;
+      }
+    });
+    const abort = () => {
+      const bot = store.bot(botId);
+      void registry.get(bot?.modelSelection.instanceId ?? "")?.adapter.interruptTurn(threadId).catch(() => {});
+      finish(new Error("Coordination run cancelled"));
+    };
+    const timer = setTimeout(() => finish(new Error("Coordinator task timed out after 30 minutes")), 30 * 60_000);
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) return abort();
+    void startTurn(botId, prompt, {
+      threadId,
+      unattended: true,
+      onDispatchError: (message) => finish(new Error(message)),
+    }).catch((error) => finish(error instanceof Error ? error : new Error(String(error))));
+  }),
+  interruptBotTurn: async (botId, threadId) => {
+    const bot = store.bot(botId);
+    await registry.get(bot?.modelSelection.instanceId ?? "")?.adapter.interruptTurn(threadId);
+  },
+  appendChannelMessage: (groupId, text) => {
+    const group = store.group(groupId);
+    const run = coordination?.latest(groupId);
+    const coordinator = run ? store.bot(run.roles.architect.botId) : undefined;
+    if (!group) return;
+    store.appendMessage(group.threadId, {
+      role: "bot",
+      kind: "text",
+      text,
+      ...(coordinator ? { from: { botId: coordinator.id, name: coordinator.name, color: coordinator.color } } : {}),
+    });
+  },
+});
 
 // Webhook definitions are independent from calendar schedules, but every
 // delivery joins the same RoutineManager queue. That keeps unattended work
@@ -2880,7 +2961,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
       if (limit === null) return json(res, 400, { error: "messages must be a non-negative whole number" });
       return json(res, 200, {
         bots: store.bots.map((bot) => ({ ...publicBot(bot), ...messagePage(bot.threadId, limit) })),
-        groups: store.groups.map((g) => ({ ...g, ...messagePage(g.threadId, limit) })),
+        groups: store.groups.map((g) => ({ ...g, coordination: coordination?.latest(g.id), ...messagePage(g.threadId, limit) })),
       });
     }
 
@@ -3504,6 +3585,40 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
       const group = store.patchGroup(m[1], patch);
       if (!group) return json(res, 404, { error: "no such room" });
       return json(res, 200, { group });
+    }
+
+    // ── Coordinator channel: goal → OMA DAG → normal Roundtable bot tasks ──
+    m = path.match(/^\/api\/groups\/([\w-]+)\/coordination$/);
+    if (m && method === "GET") {
+      if (!store.group(m[1])) return json(res, 404, { error: "no such room" });
+      return json(res, 200, { run: coordination!.latest(m[1]) ?? null });
+    }
+    if (m && method === "POST") {
+      if (!store.group(m[1])) return json(res, 404, { error: "no such room" });
+      const body = await readBody(req);
+      if (typeof body.goal !== "string") return json(res, 400, { error: "goal must be a string" });
+      try {
+        return json(res, 202, { run: await coordination!.start(m[1], body.goal) });
+      } catch (error) {
+        return json(res, 409, { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    m = path.match(/^\/api\/groups\/([\w-]+)\/coordination\/(pause|resume|cancel|retry)$/);
+    if (m && method === "POST") {
+      if (!store.group(m[1])) return json(res, 404, { error: "no such room" });
+      try {
+        const body = m[2] === "retry" ? await readBody(req) : {};
+        const run = m[2] === "pause"
+          ? coordination!.pause(m[1])
+          : m[2] === "resume"
+            ? coordination!.resume(m[1])
+            : m[2] === "cancel"
+              ? await coordination!.cancel(m[1])
+              : await coordination!.retry(m[1], typeof body.taskId === "string" ? body.taskId : undefined);
+        return json(res, 200, { run });
+      } catch (error) {
+        return json(res, 409, { error: error instanceof Error ? error.message : String(error) });
+      }
     }
     m = path.match(/^\/api\/groups\/([\w-]+)\/read$/);
     if (m && method === "POST") {

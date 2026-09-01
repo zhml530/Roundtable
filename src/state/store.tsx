@@ -110,6 +110,44 @@ export type GroupDefaultResponder =
   | { kind: "everyone" }
   | { kind: "mentions" };
 
+export type CoordinationRole = "architect" | "developer" | "tester" | "reviewer";
+export type CoordinationRunStatus = "planning" | "running" | "paused" | "completed" | "failed" | "cancelled";
+export type CoordinationTaskStatus = "pending" | "ready" | "running" | "completed" | "failed" | "blocked" | "cancelled";
+
+export interface CoordinationTask {
+  id: string;
+  title: string;
+  description: string;
+  role: CoordinationRole;
+  botId: string;
+  botName: string;
+  dependsOn: string[];
+  status: CoordinationTaskStatus;
+  threadId?: string;
+  output?: string;
+  error?: string;
+  startedAt?: number;
+  finishedAt?: number;
+  attempt: number;
+  fixCycle?: number;
+}
+
+export interface CoordinationRun {
+  id: string;
+  groupId: string;
+  goal: string;
+  status: CoordinationRunStatus;
+  roles: Record<CoordinationRole, { botId: string; botName: string }>;
+  tasks: CoordinationTask[];
+  events: Array<{ id: string; at: number; type: "run" | "task" | "review" | "control"; message: string; taskId?: string }>;
+  createdAt: number;
+  startedAt?: number;
+  finishedAt?: number;
+  error?: string;
+  report?: string;
+  fixCycles: number;
+}
+
 /** A room: several bots + you in one shared thread. */
 export interface Group {
   id: string;
@@ -136,6 +174,8 @@ export interface Group {
   /** New user-created rooms remain in setup until Save or Skip. */
   setupCompletedAt?: number | null;
   setupSkippedAt?: number | null;
+  /** Latest persisted Coordinator run for this channel. */
+  coordination?: CoordinationRun;
   messages: Message[];
 }
 
@@ -1558,6 +1598,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             }).catch(() => {});
           }
           rawDispatch({ type: "groupPatched", group });
+          break;
+        }
+        case "coordination": {
+          rawDispatch({
+            type: "groupPatched",
+            group: { id: String(frame.groupId), coordination: frame.run as CoordinationRun },
+          });
           break;
         }
         // the harness decided this was worth interrupting for; the toggle

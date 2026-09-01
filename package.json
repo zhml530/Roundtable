@@ -51,6 +51,9 @@
     "package": "pnpm package:mac"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.1123.0",
+    "@google/genai": "^1.52.0",
+    "@open-multi-agent/core": "1.17.0",
     "clsx": "^2.1.1",
     "lucide-react": "^0.539.0",
     "posthog-js": "^1.415.6",
@@ -70,11 +73,11 @@
     "@types/react": "^19.1.9",
     "@types/react-dom": "^19.1.7",
     "@vitejs/plugin-react": "^4.7.0",
+    "Roundtable": "link:",
     "electron": "43.4.0",
     "electron-builder": "^26.15.3",
     "electron-updater": "^6.8.9",
     "esbuild": "^0.28.2",
-    "Roundtable": "link:",
     "oxlint": "1.78.0",
     "tailwindcss": "^4.1.11",
     "typescript": "^5.8.3",
