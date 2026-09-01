@@ -73,7 +73,6 @@ const packageSchema = z.object({
       }),
       playbooks: z.array(key).max(40).optional(),
     })).min(1).max(200),
-    chiefOfStaff: key.optional(),
     rooms: z.array(z.object({
       key,
       name: requiredText(100),
@@ -114,7 +113,7 @@ const packageSchema = z.object({
       input: requiredText(4_000),
       output: requiredText(8_000),
     })).max(12).optional(),
-  }),
+  }).strict(),
 });
 
 export type ParsedBotPackage = z.infer<typeof packageSchema>;
@@ -143,7 +142,7 @@ function markdownDocument(markdown: string): ParsedBotPackage {
   }
   const { botmrr, ...definition } = metadata as Record<string, unknown>;
   if (botmrr !== BOTMRR_MARKDOWN_VERSION) throw new Error("BotMRR Markdown version is not supported");
-  for (const heading of ["Activation", "Mission", "Outcomes", "Connections", "Team", "Chief of Staff", "Completion rule"]) {
+  for (const heading of ["Activation", "Mission", "Outcomes", "Connections", "Team", "Coordination", "Completion rule"]) {
     if (!markdown.includes(`## ${heading}`)) throw new Error(`This Markdown is missing its ${heading} section`);
   }
   return {
@@ -175,9 +174,6 @@ export function parseBotPackage(value: JsonValue | ParsedBotPackage): ParsedBotP
   unique((pkg.rooms ?? []).map((room) => room.key), "room");
   unique((pkg.routines ?? []).map((routine) => routine.key), "routine");
 
-  if (pkg.chiefOfStaff && !agents.has(pkg.chiefOfStaff)) {
-    throw new Error(`Unknown Chief of Staff: ${pkg.chiefOfStaff}`);
-  }
   for (const agent of pkg.agents) {
     for (const playbook of agent.playbooks ?? []) {
       if (!playbooks.has(playbook)) throw new Error(`Agent ${agent.key} references unknown playbook: ${playbook}`);
@@ -201,8 +197,8 @@ export function parseBotPackage(value: JsonValue | ParsedBotPackage): ParsedBotP
 const list = (values: string[]) => values.map((value) => `- ${value}`).join("\n");
 
 /** Render the public artifact. The frontmatter enables deterministic imports;
- * the body is deliberately complete enough for any Chief-of-Staff agent to
- * run without Roundtable or another proprietary parser. */
+ * the body is deliberately complete enough for an orchestration runtime or a
+ * human operator to run without Roundtable or another proprietary parser. */
 export function renderBotPackageMarkdown(document: ParsedBotPackage): string {
   const pkg = parseBotPackage(document).package;
   const frontmatter = stringifyYaml({ botmrr: BOTMRR_MARKDOWN_VERSION, ...pkg }, { lineWidth: 0 }).trim();
@@ -251,7 +247,7 @@ export function renderBotPackageMarkdown(document: ParsedBotPackage): string {
     ? pkg.requirements.apps.map((app) => `- **${app.label}${app.optional ? " (optional)" : ""}:** ${app.reason}`).join("\n")
     : "- No connected apps are required.";
 
-  return `---\n${frontmatter}\n---\n\n# ${pkg.name}\n\n${pkg.tagline}\n\n> **Give this file to your Chief of Staff.** It is the complete team blueprint. Any agent system can run it; Roundtable can also install it directly.\n\n## Activation\n\nYou are the Chief of Staff for this blueprint. Read the whole document before acting. Confirm the user's goal and any missing inputs, then create or delegate to the specialist roles below. Preserve their names, ownership, boundaries, shared-room rules, and playbooks. If your platform cannot literally spawn agents, perform the roles one at a time and keep their outputs clearly separated.\n\nNever request pasted passwords or secret keys. Use the platform's normal connection flow. Do not send messages, publish content, spend money, delete data, or enable a schedule without the user's explicit approval. All routines start paused.\n\n## Mission\n\n${pkg.summary}\n\n## Outcomes\n\n${list(pkg.outcomes)}\n\n## Connections\n\n${connections}\n\n## Team\n\n${agents}\n\n## Chief of Staff\n\nThe Chief of Staff role is \`${pkg.chiefOfStaff ?? pkg.agents[0].key}\`. This role owns delegation, synthesis, conflict resolution, and the final answer to the user.\n${rooms ? `\n## Shared rooms\n\n${rooms}\n` : ""}${routines ? `\n## Suggested routines\n\n${routines}\n` : ""}${playbooks ? `\n## Playbooks\n\n${playbooks}\n` : ""}${examples ? `\n## Example job\n\n${examples}\n` : ""}\n## Completion rule\n\nReturn one clear result to the user, distinguish evidence from inference, cite source links when the work uses external material, and state what still needs human approval or a connected app.\n`;
+  return `---\n${frontmatter}\n---\n\n# ${pkg.name}\n\n${pkg.tagline}\n\n> **Give this file to your coordination runtime or team operator.** It is the complete team blueprint. Roundtable can install it directly.\n\n## Activation\n\nRead the whole blueprint before acting. Confirm the user's goal and any missing inputs, then let the host coordinator assign the specialist roles below. Preserve their names, ownership, boundaries, shared-room rules, and playbooks. If the platform cannot run multiple agents, perform the roles one at a time and keep their outputs clearly separated.\n\nNever request pasted passwords or secret keys. Use the platform's normal connection flow. Do not send messages, publish content, spend money, delete data, or enable a schedule without the user's explicit approval. All routines start paused.\n\n## Mission\n\n${pkg.summary}\n\n## Outcomes\n\n${list(pkg.outcomes)}\n\n## Connections\n\n${connections}\n\n## Team\n\n${agents}\n\n## Coordination\n\nThe host runtime owns planning, delegation, synthesis, conflict resolution, and the final answer. Agents remain specialists and do not acquire control-plane authority from this package.\n${rooms ? `\n## Shared rooms\n\n${rooms}\n` : ""}${routines ? `\n## Suggested routines\n\n${routines}\n` : ""}${playbooks ? `\n## Playbooks\n\n${playbooks}\n` : ""}${examples ? `\n## Example job\n\n${examples}\n` : ""}\n## Completion rule\n\nReturn one clear result to the user, distinguish evidence from inference, cite source links when the work uses external material, and state what still needs human approval or a connected app.\n`;
 }
 
 export function packageAgentAsMember(agent: BotPackageAgent): TeamManifestMember {
@@ -266,4 +262,3 @@ export function packageAgentAsMember(agent: BotPackageAgent): TeamManifestMember
     },
   };
 }
-

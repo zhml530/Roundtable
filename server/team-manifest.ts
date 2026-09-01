@@ -216,7 +216,7 @@ const MAX_MEMBER_NAME = 100;
  *
  * 1. Allowlist, not blocklist. The returned object is built field by field
  *    from the parsed member, so every privilege-bearing BotRecord field —
- *    autoApprove, alwaysAllow, chiefOfStaff, approvePeerComms, composio,
+ *    autoApprove, alwaysAllow, approvePeerComms, composio,
  *    computer, cloudBackend, cwd — is structurally absent, whatever the
  *    file claimed. parseTeamManifest already drops unknown member keys;
  *    this keeps the guarantee even if the schema grows a field later,
@@ -226,7 +226,7 @@ const MAX_MEMBER_NAME = 100;
  *    where *absence* means allowed, so leaving it unset is not safe.
  *
  * 2. No name captures. Display names are identity wherever bots address
- *    each other — @mention resolution in rooms, the Chief of Staff roster,
+ *    each other — @mention resolution in rooms, peer listings,
  *    peer-approval prompts — so an imported member wearing an existing
  *    bot's name could be mentioned, granted, or listed as if it were that
  *    bot. A colliding name is therefore visibly numbered ("Scout" →

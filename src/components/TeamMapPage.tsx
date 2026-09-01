@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowRight, BookOpen, Crown, Loader2, Network, Radio, RefreshCw, Save, X } from "lucide-react";
+import { ArrowRight, BookOpen, Loader2, Network, Radio, RefreshCw, Save, X } from "lucide-react";
 
 import { BotAvatar } from "./Avatar";
 import { api, formatTime, useStore, type Bot } from "@/state/store";
@@ -22,7 +22,7 @@ const statusTone = {
   idle: "bg-ink-secondary/35",
 } as const;
 
-function BotNode({ bot, chief = false }: { bot: Bot; chief?: boolean }) {
+function BotNode({ bot }: { bot: Bot }) {
   const { dispatch } = useStore();
   const status = teamMapStatus(bot);
   return (
@@ -41,7 +41,6 @@ function BotNode({ bot, chief = false }: { bot: Bot; chief?: boolean }) {
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-1.5">
           <span className="truncate text-[13.5px] font-semibold text-ink">{bot.name}</span>
-          {chief && <Crown size={12} className="shrink-0 text-warning" aria-label="Chief of Staff" />}
         </span>
         <span className="block truncate text-[11.5px] text-ink-secondary">{bot.title || bot.modelSelection.model}</span>
       </span>
@@ -372,19 +371,11 @@ export function TeamMapPage() {
                   >
                     <BookOpen size={11} /> Context
                   </button>
-                  <span className="text-[11px] tabular-nums text-ink-secondary">{section.chiefs.length + section.members.length}</span>
+                  <span className="text-[11px] tabular-nums text-ink-secondary">{section.bots.length}</span>
                 </div>
               </div>
               <div className="space-y-2">
-                {section.chiefs.map((bot) => <BotNode key={bot.id} bot={bot} chief />)}
-                {section.chiefs.length > 0 && section.members.length > 0 && (
-                  <div className="ml-5 h-3 w-px bg-hairline" aria-hidden />
-                )}
-                {section.members.length > 0 && (
-                  <div className={cn("space-y-2", section.chiefs.length > 0 && "border-l border-hairline/60 pl-3")}>
-                    {section.members.map((bot) => <BotNode key={bot.id} bot={bot} />)}
-                  </div>
-                )}
+                {section.bots.map((bot) => <BotNode key={bot.id} bot={bot} />)}
               </div>
             </section>
           ))}
@@ -401,7 +392,7 @@ export function TeamMapPage() {
             ))}
             {edges.length === 0 && (
               <div className="rounded-xl border border-dashed border-hairline bg-panel px-4 py-6 text-center text-[12.5px] text-ink-secondary">
-                No bot-to-bot handoffs yet. Ask a Chief of Staff to delegate a task and it will appear here live.
+                No bot-to-bot handoffs yet. Start a Coordinator run or ask a bot to collaborate with a teammate.
               </div>
             )}
           </div>

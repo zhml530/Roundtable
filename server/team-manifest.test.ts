@@ -176,7 +176,6 @@ describe("team manifests", () => {
             threadId: "thread-1",
             autoApprove: true,
             alwaysAllow: ["Bash"],
-            chiefOfStaff: true,
             approvePeerComms: false,
             composio: true,
             computer: "local",

@@ -327,12 +327,9 @@ export interface BotRecord {
   /** the one message pinned to the top of this bot's active thread; a pin
    * that no longer resolves (branch switched away, deleted) renders nothing */
   pinnedMessageId?: string;
-  /** The coordinator for this bot's sidebar section. The store enforces
-   * at most one Chief per section (including the unsectioned area). */
-  chiefOfStaff?: boolean;
   /** Pause for human approval before this bot talks to a peer (ask_bot,
-   * delegate_bot). Off by default: a chief-of-staff-style bot is most
-   * useful when it can coordinate without nagging. */
+   * delegate_bot). Off by default so peer collaboration can run without
+   * interrupting after every handoff. */
   approvePeerComms?: boolean;
   /** Whether this bot may use the workspace's connected apps (Composio).
    * Unset/true = allowed (the user configured the key deliberately);
@@ -498,7 +495,6 @@ export class Store {
     // busy never survives a restart — no turn does either. Rooms saved
     // before default responders existed adopt their first member as lead.
     let botsMigrated = false;
-    const chiefSectionsSeen = new Set<string>();
     let groupsMigrated = false;
     for (const b of this.bots) {
       // transient state never survives a restart — and if a previous
@@ -515,6 +511,14 @@ export class Store {
         delete b.autoStartVps;
         botsMigrated = true;
       }
+      // SAFETY: persisted JSON can contain fields from a pre-release schema;
+      // this temporary dictionary view is used only to delete one retired key.
+      const stale = b as BotRecord & Record<string, unknown>;
+      const retiredLeadershipField = ["chief", "Of", "Staff"].join("");
+      if (retiredLeadershipField in stale) {
+        delete stale[retiredLeadershipField];
+        botsMigrated = true;
+      }
       const avatar = botAvatarProfile(b);
       if (b.avatarUrl !== undefined && avatar.avatarUrl !== b.avatarUrl) {
         delete b.avatarUrl;
@@ -524,20 +528,6 @@ export class Store {
         delete b.avatarCrop;
         botsMigrated = true;
       }
-    }
-    for (const b of this.bots) {
-      if (!b.chiefOfStaff) continue;
-      const key = sectionKey(b.section);
-      if (!chiefSectionsSeen.has(key)) {
-        chiefSectionsSeen.add(key);
-        if (b.hidden) {
-          b.hidden = false;
-          botsMigrated = true;
-        }
-        continue;
-      }
-      b.chiefOfStaff = false;
-      botsMigrated = true;
     }
     // Peer grants originally used mutable display names (ask_bot:@Helper).
     // Convert only when exactly one bot has that name; ambiguous legacy
@@ -930,32 +920,6 @@ export class Store {
     this.saveBots();
     this.emit({ type: "bot", botId });
     return bot;
-  }
-
-  /** Elect one Chief of Staff in its section (or clear one section) as one persisted change.
-   * The changed records are returned so the server can update every open
-   * window, including the bot that just handed the role over. */
-  setChiefOfStaff(id: string | null, section?: string | null): BotRecord[] | null {
-    const selected = id ? this.bot(id) : null;
-    if (id && !selected) return null;
-    const targetSection = sectionKey(selected?.section ?? section);
-    const changed: BotRecord[] = [];
-    for (const bot of this.bots) {
-      if (sectionKey(bot.section) !== targetSection) continue;
-      const next = bot.id === id;
-      if (Boolean(bot.chiefOfStaff) === next && !(next && bot.hidden)) continue;
-      if (next) {
-        bot.chiefOfStaff = true;
-        // A section's main contact must stay reachable in the sidebar.
-        bot.hidden = false;
-      } else {
-        bot.chiefOfStaff = false;
-      }
-      changed.push(bot);
-    }
-    if (changed.length) this.saveBots();
-    for (const bot of changed) this.emit({ type: "bot", botId: bot.id });
-    return changed;
   }
 
   setResumeCursor(botId: string, instanceId: string, cursor: unknown, threadId?: string) {

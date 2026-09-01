@@ -134,8 +134,6 @@ export function createBotPackageExport(input: {
     requirements: { apps: [...requirements.values()], capabilities: [] },
     agents,
   };
-  const chief = bots.find((bot) => bot.chiefOfStaff);
-  if (chief) definition.chiefOfStaff = idToKey.get(chief.id)!;
   if (rooms.length) definition.rooms = rooms;
   if (routines.length) definition.routines = routines;
   if (playbooks.length) definition.playbooks = playbooks;
@@ -145,4 +143,3 @@ export function createBotPackageExport(input: {
     package: definition,
   });
 }
-

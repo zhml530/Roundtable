@@ -9,7 +9,6 @@ import {
   CalendarClock,
   Check,
   Compass,
-  Crown,
   ExternalLink,
   FolderOpen,
   Github,
@@ -50,7 +49,6 @@ interface TeamCatalog {
 
 export interface ArchivedTeamBot {
   id: string;
-  chiefOfStaff: boolean;
 }
 
 export interface TeamImportResult {
@@ -492,7 +490,6 @@ export function TeamLibraryPanel({
               )}
               {pending.kind === "package" && (
                 <div className="mt-5 flex flex-wrap gap-2 text-[11.5px] text-ink-secondary">
-                  {pending.chiefOfStaff && <span className="flex items-center gap-1.5 rounded-full bg-raised px-3 py-1.5"><Crown size={13} />{pending.chiefOfStaff} leads</span>}
                   <span className="flex items-center gap-1.5 rounded-full bg-raised px-3 py-1.5"><MessageSquare size={13} />{pending.rooms} {pending.rooms === 1 ? "room" : "rooms"}</span>
                   <span className="flex items-center gap-1.5 rounded-full bg-raised px-3 py-1.5"><BookOpen size={13} />{pending.playbooks} playbooks</span>
                   <span className="flex items-center gap-1.5 rounded-full bg-raised px-3 py-1.5"><CalendarClock size={13} />{pending.routines} paused routines</span>
@@ -517,7 +514,7 @@ export function TeamLibraryPanel({
                 <Check size={15} className="mt-0.5 shrink-0 text-success" />
                 <p>
                   {pending.kind === "package"
-                    ? "Bots, Chief of Staff, rooms, and reviewed playbooks are loaded. Suggested routines arrive paused, and connected apps stay off until you approve them. Conversations, credentials, permissions, and computer access stay private."
+                    ? "Bots, rooms, and reviewed playbooks are loaded. The Roundtable Coordinator owns orchestration. Suggested routines arrive paused, and connected apps stay off until you approve them. Conversations, credentials, permissions, and computer access stay private."
                     : "Only roles and appearance are loaded. Your conversations, account connections, permissions, and computer access stay private."}
                 </p>
               </div>
@@ -890,4 +887,3 @@ export function TeamLibraryPanel({
     document.body,
   );
 }
-

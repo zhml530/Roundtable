@@ -20,7 +20,6 @@ describe("package export", () => {
           unread: false,
           modelSelection: { instanceId: "private-engine", model: "secret-model", effort: "medium" },
           resumeCursors: { provider: "secret-session" },
-          chiefOfStaff: true,
           composio: true,
           cwd: "/private/path",
           autoApprove: true,
@@ -63,7 +62,6 @@ describe("package export", () => {
     expect(exported).toMatchObject({
       format: "openmaus.package",
       package: {
-        chiefOfStaff: "lead",
         requirements: { apps: [{ slug: "github" }] },
         rooms: [{ members: ["lead"], defaultResponder: { kind: "agent", agent: "lead" } }],
         routines: [{ agent: "lead", enabledAfterInstall: false }],

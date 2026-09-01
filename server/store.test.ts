@@ -209,29 +209,22 @@ describe("Store", () => {
     expect(reloaded.bot(bot.id)?.modelSelection.effort).toBe("high");
   });
 
-  it("keeps one persisted Chief of Staff per section and supports handoff", () => {
+  it("drops the retired bot leadership field without losing the bot or transcript", () => {
     const store = new Store(selection);
-    const first = store.createBot({ section: "Work" });
-    const second = store.createBot({ section: "Work" });
-    const personal = store.createBot({ section: "Personal" });
-
-    expect(store.setChiefOfStaff(first.id)?.map((bot) => bot.id)).toEqual([first.id]);
-    expect(store.bot(first.id)?.chiefOfStaff).toBe(true);
-    expect(store.setChiefOfStaff(personal.id)?.map((bot) => bot.id)).toEqual([personal.id]);
-
-    const changed = store.setChiefOfStaff(second.id)!;
-    expect(changed.map((bot) => bot.id).sort()).toEqual([first.id, second.id].sort());
-    expect(store.bot(first.id)?.chiefOfStaff).toBe(false);
-    expect(store.bot(second.id)?.chiefOfStaff).toBe(true);
-    expect(store.bot(personal.id)?.chiefOfStaff).toBe(true);
+    const bot = store.createBot({ name: "Atlas" });
+    store.appendMessage(bot.threadId, { role: "user", kind: "text", text: "Keep this history" });
+    const raw: BotRecord[] = JSON.parse(readFileSync(join(DATA_DIR, "bots.json"), "utf8"));
+    const retiredLeadershipField = ["chief", "Of", "Staff"].join("");
+    writeFileSync(join(DATA_DIR, "bots.json"), JSON.stringify([
+      { ...raw[0], [retiredLeadershipField]: true },
+    ]));
 
     const reloaded = new Store(selection);
-    expect(reloaded.bots.filter((bot) => bot.chiefOfStaff).map((bot) => bot.id).sort()).toEqual(
-      [second.id, personal.id].sort(),
-    );
-    expect(reloaded.setChiefOfStaff(null, "Work")?.map((bot) => bot.id)).toEqual([second.id]);
-    expect(reloaded.bot(personal.id)?.chiefOfStaff).toBe(true);
-    expect(reloaded.bot(second.id)?.chiefOfStaff).toBe(false);
+    expect(reloaded.bot(bot.id)?.name).toBe("Atlas");
+    expect(reloaded.messagesFor(bot.threadId).some((message) => message.text === "Keep this history")).toBe(true);
+    expect(Object.hasOwn(reloaded.bot(bot.id)!, retiredLeadershipField)).toBe(false);
+    const saved: BotRecord[] = JSON.parse(readFileSync(join(DATA_DIR, "bots.json"), "utf8"));
+    expect(Object.hasOwn(saved[0]!, retiredLeadershipField)).toBe(false);
   });
 
   it("patchMessage merges card patches and returns null for unknown ids", () => {

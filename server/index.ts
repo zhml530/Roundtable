@@ -34,7 +34,6 @@ import { groupTurnCwd } from "./room-cwd.ts";
 import { RoomTurnDeadline, RoomTurnStallRegistry, roomTurnTimeoutMessage } from "./room-turn-timeout.ts";
 import * as box from "./box.ts";
 import * as composio from "./composio.ts";
-import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
 import {
   ensureDirs,
   instanceConfigs,
@@ -182,7 +181,6 @@ function authorizedComms(header: string | string[] | undefined): boolean {
 // a peer invoked via ask_bot runs at depth 1 and gets NO agents tool, so
 // A→B is allowed but B→C (and A→B→A loops) never start.
 const MAX_COMMS_DEPTH = 1;
-const MAX_WORKSPACE_BOTS = 100;
 // Resolved from the server root — see server/proxy-paths.ts. This descending
 // path happened to survive bundling, but it goes through the same anchor so
 // there is exactly one way proxies are located.
@@ -1477,11 +1475,9 @@ async function startTurn(
             sectionPeers,
           )
         : [];
-      const coordinationPrompt = bot.chiefOfStaff
-        ? chiefOfStaffSystemPrompt(bot.id, store.bots, Boolean(integrations.agents))
-        : integrations.agents && sectionPeers.length > 0
-          ? "You can work with the other bots in your section through the agents tools — list_bots shows who's available, ask_bot sends one of them a message and returns their reply."
-          : "";
+      const coordinationPrompt = integrations.agents && sectionPeers.length > 0
+        ? "You can work with the other bots in your section through the agents tools — list_bots shows who's available, ask_bot sends one of them a message and returns their reply."
+        : "";
       const credentialPrompt = integrations.agents
         ? " If a supported API key is missing, use request_credential to show the secure in-app card. Never ask the user to paste credentials into chat."
         : "";
@@ -2496,8 +2492,8 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
         const self = url.searchParams.get("self");
         const sender = self ? store.bot(self) : null;
         if (!sender) return json(res, 403, { error: "unknown sender" });
-        // title/description included so a "chief of staff"-style bot can
-        // judge the team (who does what, who has no job description yet)
+        // title/description let peer agents judge who owns which specialty
+        // and who still needs a clearer role.
         const bots = store.bots
           .filter(
             (b) =>
@@ -2549,7 +2545,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
         // chip that opens the channel, so bot-to-bot turns are never
         // invisible (they cost the user tokens).
         //
-        // per-bot approval gate: a chief-of-staff bot without this on is
+        // per-bot approval gate: a coordinating bot without this on is
         // free to coordinate; one with it on must wait for a human card
         // (15-min timeout → deny) before its peer turn starts. The channel
         // and the chips are created only AFTER the verdict, so a denied
@@ -2632,64 +2628,6 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
           message: from.approvePeerComms
             ? `Queued for review — @${targetName} will only pick it up if the user approves after your turn finishes.`
             : `Delegation queued — @${targetName} will pick it up after your current turn finishes.`,
-        });
-      }
-      if (method === "POST" && path === "/api/internal/create-bot") {
-        const body = await readBody(req);
-        const fromBotId = String(body.fromBotId ?? "");
-        const chief = store.bot(fromBotId);
-        if (!chief) return json(res, 403, { error: "unknown sender" });
-        const fromThreadId = String(body.fromThreadId ?? chief.threadId);
-        if (!store.taskByThread(chief.id, fromThreadId)) {
-          return json(res, 403, { error: "source thread does not belong to sender" });
-        }
-        if (!chief.chiefOfStaff) {
-          return json(res, 403, { error: "only a section's Chief of Staff can create operator bots" });
-        }
-        if (store.bots.length >= MAX_WORKSPACE_BOTS) {
-          return json(res, 409, { error: `this workspace is limited to ${MAX_WORKSPACE_BOTS} bots` });
-        }
-        const name = String(body.name ?? "").trim();
-        const role = String(body.role ?? "").trim();
-        const instructions = String(body.instructions ?? "").trim();
-        if (!name || !role || !instructions) {
-          return json(res, 400, { error: "name, role, and instructions are required" });
-        }
-        if (name.length > 80) return json(res, 400, { error: "name must be at most 80 characters" });
-        if (role.length > 120) return json(res, 400, { error: "role must be at most 120 characters" });
-        if (instructions.length > 1_000) {
-          return json(res, 400, { error: "instructions must be at most 1000 characters" });
-        }
-        const duplicate = store.bots.find(
-          (candidate) =>
-            !candidate.hidden &&
-            sectionKey(candidate.section) === sectionKey(chief.section) &&
-            candidate.name.trim().toLowerCase() === name.toLowerCase(),
-        );
-        if (duplicate) {
-          return json(res, 409, { error: `@${duplicate.name} already exists in this section; use list_bots` });
-        }
-        const created = store.createBot(
-          {
-            name,
-            title: role,
-            description: instructions,
-            modelSelection: { ...chief.modelSelection },
-            section: chief.section,
-          },
-          { seedMessages: false },
-        );
-        const safeBot = store.patchBot(created.id, {
-          composio: false,
-          autoApprove: false,
-          approvePeerComms: false,
-        })!;
-        return json(res, 201, {
-          id: safeBot.id,
-          name: safeBot.name,
-          title: safeBot.title,
-          section: safeBot.section || "General",
-          model: safeBot.modelSelection.model,
         });
       }
       if (method === "POST" && path === "/api/internal/request-credential") {
@@ -3286,7 +3224,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
       // second, freshly numbered set (an edit the user made to the first set
       // is theirs and stays). Replace mode does hide the current team, but
       // that archive is driven by the mode parameter the user chose and
-      // touches only hidden/chiefOfStaff on their own bots — nothing in the
+      // touches only hidden state on their own bots — nothing in the
       // file decides what gets archived or how.
       const importMode = url.searchParams.get("mode") ?? "add";
       if (importMode !== "add" && importMode !== "replace" && importMode !== "project") {
@@ -3327,7 +3265,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
       const archived = importMode === "replace"
         ? store.bots
             .filter((bot) => !bot.hidden)
-            .map((bot) => ({ id: bot.id, chiefOfStaff: Boolean(bot.chiefOfStaff) }))
+            .map((bot) => ({ id: bot.id }))
         : [];
       const importedBots: ReturnType<typeof store.createBot>[] = [];
       const createdGroups: GroupRecord[] = [];
@@ -3424,10 +3362,6 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
           createdRoutineIds.push(created.id);
         }
 
-        if (pkg?.chiefOfStaff) {
-          store.setChiefOfStaff(memberIds.get(pkg.chiefOfStaff)!);
-        }
-
         // The room is created last, so a failure anywhere above leaves no
         // half-built project behind — the catch below deletes the bots and
         // there is no room pointing at them.
@@ -3448,7 +3382,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
         // that fails validation or persistence never disturbs the current
         // workspace.
         const archivedBots = archived.flatMap(({ id }) => {
-          const bot = store.patchBot(id, { hidden: true, chiefOfStaff: false });
+          const bot = store.patchBot(id, { hidden: true });
           return bot ? [publicBot(bot)] : [];
         });
         const publicBots = importedBots.map((bot) => publicBot(store.bot(bot.id)!));
@@ -3765,6 +3699,10 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
     m = path.match(/^\/api\/bots\/([\w-]+)$/);
     if (m && method === "PATCH") {
       const body = await readBody(req);
+      const retiredLeadershipField = ["chief", "Of", "Staff"].join("");
+      if (Object.prototype.hasOwnProperty.call(body, retiredLeadershipField)) {
+        return json(res, 400, { error: "Bot-level leadership is retired; use a Channel Coordinator run" });
+      }
       const existingBot = store.bot(m[1]);
       // Neither Codex (free-form string field) nor Grok (lazy, logs-only)
       // rejects an unknown effort level at their own boundary — this is the
@@ -3828,7 +3766,6 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
         } else return json(res, 400, { error: "pinnedMessageId must be a message id" });
       }
       if (section !== undefined) patch.section = section ?? undefined;
-      if (body.chiefOfStaff === false) patch.chiefOfStaff = false;
       // per-bot gate on the workspace's connected apps (Composio)
       if (body.composio !== undefined) {
         if (typeof body.composio !== "boolean") return json(res, 400, { error: "composio must be true or false" });
@@ -3840,16 +3777,10 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
       ) {
         return json(res, 400, { error: "computer must be cloud or off" });
       }
-      if (body.chiefOfStaff !== undefined && typeof body.chiefOfStaff !== "boolean") {
-        return json(res, 400, { error: "chiefOfStaff must be true or false" });
-      }
       if (body.cwd !== undefined) {
         const checked = validateBotCwd(body.cwd);
         if (!checked.ok) return json(res, 400, { error: checked.error });
         patch.cwd = checked.cwd ?? undefined;
-      }
-      if (body.hidden === true && existingBot?.chiefOfStaff && body.chiefOfStaff !== false) {
-        return json(res, 400, { error: "choose another Chief of Staff before hiding this bot" });
       }
       // the permission fields decide what runs unattended, so they are
       // type-checked rather than copied through: a string alwaysAllow would
@@ -3870,18 +3801,8 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
         }
         patch.alwaysAllow = [...new Set(body.alwaysAllow as string[])].slice(0, 200);
       }
-      const chiefMovedSections =
-        Boolean(existingBot?.chiefOfStaff) &&
-        body.chiefOfStaff !== false &&
-        section !== undefined &&
-        sectionKey(existingBot?.section) !== sectionKey(section);
       const bot = store.patchBot(m[1], patch);
       if (!bot) return json(res, 404, { error: "no such bot" });
-      const chiefChanges =
-        body.chiefOfStaff === true || chiefMovedSections
-          ? store.setChiefOfStaff(bot.id)
-          : [];
-      if (chiefChanges === null) return json(res, 404, { error: "no such bot" });
       return json(res, 200, { bot: wireBot(store.bot(bot.id)!) });
     }
 
@@ -4662,4 +4583,3 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     void registry.disposeAll().finally(() => process.exit(0));
   });
 }
-

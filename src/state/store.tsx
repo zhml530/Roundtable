@@ -247,8 +247,6 @@ export interface Bot {
   section?: string;
   /** the one message pinned to the top of this bot's active thread */
   pinnedMessageId?: string;
-  /** This sidebar section's primary coordinator. */
-  chiefOfStaff?: boolean;
   /** When this bot wants to talk to another bot (ask_bot/delegate_bot),
    * pause and ask the user first. Off by default. */
   approvePeerComms?: boolean;
@@ -753,19 +751,9 @@ export function reducer(state: AppState, action: Action): AppState {
               ? "celebrate"
               : null;
       const animated = kind ? withMascotMotion(state, action.bot.id, kind) : state;
-      const next = action.bot.chiefOfStaff
-        ? {
-            ...animated,
-            bots: animated.bots.map((b) =>
-              b.id === action.bot.id || (b.section?.trim() || "") !== (action.bot.section?.trim() || "")
-                ? b
-                : { ...b, chiefOfStaff: false },
-            ),
-          }
-        : animated;
       const switchedThread =
         typeof action.bot.threadId === "string" && action.bot.threadId !== before.threadId;
-      return updateBot(next, action.bot.id, (b) => ({
+      return updateBot(animated, action.bot.id, (b) => ({
         ...b,
         ...action.bot,
         // Ordinary bot patches omit messages and must preserve the current
@@ -919,19 +907,7 @@ export function reducer(state: AppState, action: Action): AppState {
       const animated = mascotChanged
         ? withMascotMotion(state, action.botId, "customize")
         : state;
-      const target = animated.bots.find((bot) => bot.id === action.botId);
-      const chiefSection = (action.patch.section ?? target?.section)?.trim() || "";
-      const next = action.patch.chiefOfStaff
-        ? {
-            ...animated,
-            bots: animated.bots.map((b) =>
-              b.id === action.botId || (b.section?.trim() || "") !== chiefSection
-                ? b
-                : { ...b, chiefOfStaff: false },
-            ),
-          }
-        : animated;
-      return updateBot(next, action.botId, (b) => ({ ...b, ...action.patch }));
+      return updateBot(animated, action.botId, (b) => ({ ...b, ...action.patch }));
     }
     case "threadActive": {
       const bot = state.bots.find((b) => b.threadId === action.threadId);

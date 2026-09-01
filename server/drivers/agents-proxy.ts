@@ -1,5 +1,5 @@
 // Agent-to-agent comms MCP proxy — spawned as an MCP server inside a bot's
-// agent process (via the "agents" integration). Exposes five tools that
+// agent process (via the "agents" integration). Exposes four tools that
 // let one bot talk to another, routed back through the harness so the
 // harness stays the single owner of turns, permissions, and recursion
 // limits:
@@ -10,8 +10,6 @@
 //                                          immediately, the peer runs after your
 //                                          current turn finishes, the user sees
 //                                          the peer's reply as its own turn
-//   create_bot(name, role, instructions) → Chiefs can add a specialist to
-//                                          their own section
 //   request_credential(id, reason?)       → show a secure, allowlisted key card
 //
 // Speaks raw JSON-RPC 2.0 over stdio (no MCP SDK — house style, matches
@@ -32,8 +30,6 @@ const BOT_ID = process.env.OMB_BOT_ID ?? "";
 const THREAD_ID = process.env.OMB_THREAD_ID ?? "";
 const TOKEN = process.env.OMB_COMMS_TOKEN ?? "";
 const DEPTH = Number(process.env.OMB_TURN_DEPTH ?? "0") || 0;
-const MAX_CREATED_PER_TURN = 4;
-let createdThisTurn = 0;
 
 const TOOLS = [
   {
@@ -67,20 +63,6 @@ const TOOLS = [
         reason: { type: "string", description: "Optional one-line reason for the delegation (shown to the user as a chip)." },
       },
       required: ["bot_id", "message"],
-    },
-  },
-  {
-    name: "create_bot",
-    description:
-      "Create a specialist bot in your section. Only a section's Chief of Staff may use this. The new bot inherits the Chief's engine, starts with connected apps and automatic approvals disabled, and can then receive work through delegate_bot. Create only the smallest useful team (maximum four per turn).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        name: { type: "string", description: "Short, unique display name for the specialist." },
-        role: { type: "string", description: "The specialist's job title or role." },
-        instructions: { type: "string", description: "What this specialist is responsible for and how it should work." },
-      },
-      required: ["name", "role", "instructions"],
     },
   },
   {
@@ -173,31 +155,6 @@ async function callTool(name: string, args: Json): Promise<{ text: string; isErr
     // peer turn runs after our current turn finishes.
     return { text: typeof r.message === "string" ? r.message : "Delegation queued." };
   }
-  if (name === "create_bot") {
-    const botName = String(args.name ?? "").trim();
-    const role = String(args.role ?? "").trim();
-    const instructions = String(args.instructions ?? "").trim();
-    if (!botName || !role || !instructions) {
-      return { text: "create_bot needs name, role, and instructions.", isError: true };
-    }
-    if (createdThisTurn >= MAX_CREATED_PER_TURN) {
-      return { text: `You can create at most ${MAX_CREATED_PER_TURN} bots in one turn. Use the team you have before adding more.`, isError: true };
-    }
-    const r = await api(`/api/internal/create-bot`, {
-      method: "POST",
-      body: JSON.stringify({
-        fromBotId: BOT_ID,
-        fromThreadId: THREAD_ID,
-        name: botName,
-        role,
-        instructions,
-      }),
-    });
-    createdThisTurn += 1;
-    return {
-      text: `Created @${r.name ?? botName} in ${r.section ?? "General"} [id: ${r.id}]. Assign work with delegate_bot.`,
-    };
-  }
   if (name === "request_credential") {
     const credentialId = args.credential_id;
     if (!isCredentialTargetId(credentialId)) {
@@ -276,4 +233,3 @@ rl.on("line", (line) => {
   });
 });
 rl.on("close", () => process.exit(0));
-

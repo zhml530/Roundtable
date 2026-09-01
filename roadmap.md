@@ -12,6 +12,13 @@ Roundtable 已有的 Bot、ACP Provider、工具权限、会话和桌面体验�
 OMA 负责 Goal 分解、DAG 和依赖调度；Roundtable 始终负责真正的 Bot 执行、
 Provider session、审批、工具、工作目录、消息和 UI 状态。
 
+已确认的产品决策：Coordinator 最终完整替换 Chief of Staff。Coordinator 是
+Roundtable Runtime 能力，不从 Bot 中选出，不使用皇冠或 Agent 级领导权限；
+Planner 只是每次 Run 临时选择的执行 Bot。项目仍在开发期，因此采用 breaking
+change：不保留旧 Chief 数据/API 语义，也不保留旧 Package reader 或双格式兼容层。
+现有 Bot Profile 与会话继续保留，只删除 Chief 身份。完整迁移方案见
+[`docs/plans/coordinator-replaces-chief-of-staff.md`](docs/plans/coordinator-replaces-chief-of-staff.md)。
+
 ```mermaid
 flowchart LR
     MVP[Hackathon MVP<br/>Goal to DAG and execution]
@@ -24,6 +31,16 @@ flowchart LR
 ```
 
 ## 已完成功能
+
+### Coordinator 统一协调权
+
+- Coordinator 是 Channel/Runtime 能力，不再从 Bot 中选择领导 Agent。
+- 已删除旧 Bot 领导字段、动态领导 Prompt、单领导 Store 约束和 Agent 级创建权限。
+- Bot Settings、Sidebar、Chat、Team Map 和 Team Library 不再显示领导身份或皇冠。
+- Package 直接使用 `Coordination` 语义，由宿主 Runtime 负责规划、委派、冲突处理和
+  最终结果；旧领导格式不保留 reader 或兼容层。
+- 普通 Channel 消息继续使用 `defaultResponder`，结构化 Goal 则进入 Coordinator DAG；
+  两者不再通过某个特殊 Bot 混合。
 
 ### Coordinator Channel
 
@@ -95,14 +112,15 @@ flowchart LR
 ### 当前验证状态
 
 - Coordinator domain、OMA 执行桥、Reviewer Fix loop、Pause 和 DAG layout：
-  11 个专项测试通过。
+  11 个专项测试通过；本次统一协调权相关专项测试 118 个通过。
 - TypeScript typecheck 通过。
 - Renderer production build 通过。
 - Packaged server bundle 通过。
+- Electron 模块语法检查通过。
 - 新增文件 lint 与 diff 检查通过。
 - 仍需在四个真实 Provider Bot 上完成一次完整的桌面端演练。
-- 全仓现有测试还存在与 Coordinator 无关的 TTS 失败，以及 health 测试与
-  当前 `/api/health` 返回结构不一致的问题。
+- 全仓 1414 项测试中 1376 通过、25 跳过；仍有 9 个 peer-comms transport、3 个
+  TTS 基线失败，以及 1 个 health 测试与当前 `/api/health` 返回结构不一致的问题。
 
 ## 近期：把 Hackathon Demo 做稳
 

@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronLeft, Crown, FolderOpen, X } from "lucide-react";
+import { ChevronDown, ChevronLeft, FolderOpen, X } from "lucide-react";
 import { useState } from "react";
 import { api, useStore, type Bot } from "@/state/store";
 import { stateForBot } from "@/lib/mascot";
@@ -327,7 +327,6 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
         | "autoApprove"
         | "speakReplies"
         | "voice"
-        | "chiefOfStaff"
         | "approvePeerComms"
         | "modelSelection"
       >
@@ -337,12 +336,6 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const mascotMotion = state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
   const engine = state.instances.find((instance) => instance.instanceId === bot.modelSelection.instanceId);
   const canCoordinate = engine?.capabilities?.agentsMcp === true;
-  const sectionName = bot.section?.trim() || "General";
-  const currentChief = state.bots.find(
-    (candidate) =>
-      candidate.chiefOfStaff &&
-      (candidate.section?.trim() || "") === (bot.section?.trim() || ""),
-  );
 
   return (
     <>
@@ -403,54 +396,6 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
               onChange={(e) => patch({ description: e.target.value })}
             />
           </Field>
-
-          <div className={cn(
-            "rounded-xl border p-4",
-            bot.chiefOfStaff ? "border-accent/40 bg-accent/10" : "border-hairline/40 bg-card",
-          )}>
-            <div className="flex items-center gap-3">
-              <span className={cn(
-                "flex size-8 shrink-0 items-center justify-center rounded-lg",
-                bot.chiefOfStaff ? "bg-accent text-white" : "bg-control text-ink-secondary",
-              )}>
-                <Crown size={17} />
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className="text-[15px] font-medium text-ink">Chief of Staff</div>
-                <div className="text-[11.5px] text-ink-secondary">One for {sectionName}</div>
-              </div>
-              <button
-                role="switch"
-                aria-checked={Boolean(bot.chiefOfStaff)}
-                aria-label="Chief of Staff"
-                disabled={!bot.chiefOfStaff && !canCoordinate}
-                onClick={() => patch({ chiefOfStaff: !bot.chiefOfStaff })}
-                title={!bot.chiefOfStaff && !canCoordinate ? "This engine cannot contact other bots" : undefined}
-                className={cn(
-                  "relative h-[26px] w-[44px] shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-40",
-                  bot.chiefOfStaff ? "bg-accent" : "bg-control",
-                )}
-              >
-                <span
-                  className={cn(
-                    "absolute top-[3px] size-5 rounded-full bg-white transition-all",
-                    bot.chiefOfStaff ? "left-[21px]" : "left-[3px]",
-                  )}
-                />
-              </button>
-            </div>
-            <div className="mt-3 text-[13px] leading-relaxed text-ink-secondary">
-              {bot.chiefOfStaff && !canCoordinate
-                ? "This bot still holds the role, but its current engine cannot contact teammates. Choose a Claude or ACP engine to restore coordination."
-                : bot.chiefOfStaff
-                  ? `This is the primary contact for ${sectionName}. It can create and coordinate specialists in this section, then combine their work into one answer.`
-                : !canCoordinate
-                  ? "Choose a Claude or ACP engine to let this bot coordinate teammates."
-                  : currentChief
-                    ? `Make this bot the ${sectionName} Chief and hand the role over from ${currentChief.name}.`
-                    : `Make this bot the primary contact for the ${sectionName} section.`}
-            </div>
-          </div>
 
           <div className="flex items-center justify-between gap-4 rounded-xl bg-card p-4">
             <div>

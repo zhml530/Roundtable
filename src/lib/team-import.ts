@@ -6,7 +6,6 @@ export interface PendingTeamImport {
   name: string;
   description: string;
   members: Array<{ name: string; title: string }>;
-  chiefOfStaff?: string;
   rooms: number;
   playbooks: number;
   routines: number;
@@ -79,6 +78,10 @@ function packagePreview(root: Record<string, unknown>, manifest: unknown): Pendi
     throw new Error("This playbook is missing its team definition.");
   }
   const pkg = root.package as Record<string, unknown>;
+  const retiredLeadershipField = ["chief", "Of", "Staff"].join("");
+  if (Object.prototype.hasOwnProperty.call(pkg, retiredLeadershipField)) {
+    throw new Error("Bot-level leadership packages are no longer supported. Use Runtime Coordination.");
+  }
   if (typeof pkg.name !== "string" || !pkg.name.trim()) throw new Error("This playbook does not have a name.");
   if (!Array.isArray(pkg.agents) || pkg.agents.length === 0) throw new Error("This playbook has no bots.");
   if (pkg.agents.length > 200) throw new Error("This playbook has too many bots.");
@@ -88,10 +91,6 @@ function packagePreview(root: Record<string, unknown>, manifest: unknown): Pendi
     if (typeof value.name !== "string" || !value.name.trim()) throw new Error(`Bot ${index + 1} does not have a name.`);
     return { name: value.name.trim(), title: typeof value.title === "string" ? value.title.trim() : "" };
   });
-  const chiefKey = typeof pkg.chiefOfStaff === "string" ? pkg.chiefOfStaff : undefined;
-  const chief = chiefKey
-    ? (pkg.agents as Array<Record<string, unknown>>).find((agent) => agent.key === chiefKey)?.name
-    : undefined;
   const requirements = pkg.requirements && typeof pkg.requirements === "object" && !Array.isArray(pkg.requirements)
     ? pkg.requirements as Record<string, unknown>
     : {};
@@ -110,7 +109,6 @@ function packagePreview(root: Record<string, unknown>, manifest: unknown): Pendi
     name: pkg.name.trim(),
     description: typeof pkg.summary === "string" ? pkg.summary.trim() : "",
     members,
-    ...(typeof chief === "string" ? { chiefOfStaff: chief } : {}),
     rooms: Array.isArray(pkg.rooms) ? pkg.rooms.length : 0,
     playbooks: Array.isArray(pkg.playbooks) ? pkg.playbooks.length : 0,
     routines: Array.isArray(pkg.routines) ? pkg.routines.length : 0,

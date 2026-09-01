@@ -3,7 +3,6 @@ export interface TeamMapBot {
   name: string;
   hidden?: boolean;
   section?: string;
-  chiefOfStaff?: boolean;
   busy?: boolean;
   activity?: "working" | "waiting-on-you" | "idle" | "no-signal" | "dead";
 }
@@ -18,8 +17,7 @@ export interface TeamMapSection<T extends TeamMapBot = TeamMapBot> {
   /** Exact persisted section identity; empty string is the unsectioned team. */
   key: string;
   name: string;
-  chiefs: T[];
-  members: T[];
+  bots: T[];
 }
 
 export type TeamMapEdge = {
@@ -52,8 +50,7 @@ export function buildTeamMapSections<T extends TeamMapBot>(bots: T[]): TeamMapSe
   return [...sections].map(([key, sectionBots]) => ({
     key,
     name: key || "General",
-    chiefs: sectionBots.filter((bot) => bot.chiefOfStaff),
-    members: sectionBots.filter((bot) => !bot.chiefOfStaff),
+    bots: sectionBots,
   }));
 }
 

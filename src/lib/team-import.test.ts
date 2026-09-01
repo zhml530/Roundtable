@@ -29,6 +29,16 @@ describe("team import preview", () => {
     expect(() =>
       teamImportPreview({ format: "openmaus.team", version: 2, team: { name: "Empty", members: [] } }),
     ).toThrow("no members");
+    const retiredLeadershipField = ["chief", "Of", "Staff"].join("");
+    expect(() => teamImportPreview({
+      format: "openmaus.package",
+      version: 1,
+      package: {
+        name: "Old leadership package",
+        agents: [{ key: "lead", name: "Lead" }],
+        [retiredLeadershipField]: "lead",
+      },
+    })).toThrow("leadership packages are no longer supported");
   });
 
   it("previews the complete package setup before installation", () => {
@@ -42,7 +52,6 @@ describe("team import preview", () => {
           { key: "scout", name: "Scout", title: "Researcher" },
           { key: "writer", name: "Writer", title: "Outreach" },
         ],
-        chiefOfStaff: "scout",
         rooms: [{}],
         playbooks: [{}, {}],
         routines: [{}],
@@ -58,7 +67,6 @@ describe("team import preview", () => {
     expect(preview).toMatchObject({
       kind: "package",
       name: "Lead Desk",
-      chiefOfStaff: "Scout",
       rooms: 1,
       playbooks: 2,
       routines: 1,
@@ -78,7 +86,6 @@ agents:
   - key: scout
     name: Scout
     title: Researcher
-chiefOfStaff: scout
 rooms: []
 playbooks: []
 routines: []
@@ -96,7 +103,6 @@ Create the team.`);
     expect(preview).toMatchObject({
       kind: "package",
       name: "Lead Desk",
-      chiefOfStaff: "Scout",
       apps: [{ label: "Reddit", optional: false }],
     });
   });

@@ -680,35 +680,6 @@ describe("harness HTTP API", () => {
     expect(after.body.bots.find((b: { id: string }) => b.id === bot.id)).toBeUndefined();
   });
 
-  it("elects one Chief of Staff per section and preserves other section Chiefs", async () => {
-    const workA = (await api("POST", "/api/bots")).body.bot;
-    const workB = (await api("POST", "/api/bots")).body.bot;
-    const personal = (await api("POST", "/api/bots")).body.bot;
-    try {
-      await api("PATCH", `/api/bots/${workA.id}`, { section: "Work", chiefOfStaff: true });
-      await api("PATCH", `/api/bots/${workB.id}`, { section: "Work" });
-      await api("PATCH", `/api/bots/${personal.id}`, { section: "Personal", chiefOfStaff: true });
-
-      let bots = (await api("GET", "/api/bots")).body.bots;
-      expect(bots.find((bot: { id: string }) => bot.id === workA.id).chiefOfStaff).toBe(true);
-      expect(bots.find((bot: { id: string }) => bot.id === personal.id).chiefOfStaff).toBe(true);
-
-      await api("PATCH", `/api/bots/${workB.id}`, { chiefOfStaff: true });
-      bots = (await api("GET", "/api/bots")).body.bots;
-      expect(bots.find((bot: { id: string }) => bot.id === workA.id).chiefOfStaff).toBe(false);
-      expect(bots.find((bot: { id: string }) => bot.id === workB.id).chiefOfStaff).toBe(true);
-      expect(bots.find((bot: { id: string }) => bot.id === personal.id).chiefOfStaff).toBe(true);
-
-      // Moving a Chief keeps its role and hands off only in the destination.
-      await api("PATCH", `/api/bots/${workB.id}`, { section: "Personal" });
-      bots = (await api("GET", "/api/bots")).body.bots;
-      expect(bots.find((bot: { id: string }) => bot.id === workB.id).chiefOfStaff).toBe(true);
-      expect(bots.find((bot: { id: string }) => bot.id === personal.id).chiefOfStaff).toBe(false);
-    } finally {
-      for (const bot of [workA, workB, personal]) await api("DELETE", `/api/bots/${bot.id}`);
-    }
-  });
-
   it("explains when archived room members cannot respond", async () => {
     const archived = (await api("POST", "/api/bots")).body.bot;
     const active = (await api("POST", "/api/bots")).body.bot;
@@ -722,7 +693,6 @@ describe("harness HTTP API", () => {
       const archivedBot = await api("PATCH", `/api/bots/${archived.id}`, {
         name: "Quill",
         hidden: true,
-        chiefOfStaff: false,
       });
       expect(archivedBot.status).toBe(200);
       await api("PATCH", `/api/bots/${active.id}`, {
@@ -968,7 +938,7 @@ describe("harness HTTP API", () => {
     expect(markdownExport.status).toBe(200);
     expect(markdownExport.body).toMatchObject({ name: "Field Team", members: visibleNames.length });
     expect(markdownExport.body.markdown).toContain("## Activation");
-    expect(markdownExport.body.markdown).toContain("Give this file to your Chief of Staff");
+    expect(markdownExport.body.markdown).toContain("## Coordination");
     expect(markdownExport.body.markdown).not.toMatch(/Archived|autoApprove|alwaysAllow|modelSelection|threadId/);
     expect((await api("GET", "/api/bots")).body.groups).toHaveLength(roomsBefore);
     expect((await api("POST", "/api/teams/export", {})).body.team.name).toBe("My OpenMaus Team");
@@ -1036,11 +1006,9 @@ describe("harness HTTP API", () => {
       // Put the shared test harness back exactly as it was before exercising
       // replace. This mirrors the UI's Undo action and preserves the seeded bot.
       for (const bot of replaced.body.bots) await api("DELETE", `/api/bots/${bot.id}`);
-      for (const bot of replaced.body.archived.filter((item: { chiefOfStaff: boolean }) => !item.chiefOfStaff)) {
+      for (const bot of replaced.body.archived) {
         await api("PATCH", `/api/bots/${bot.id}`, { hidden: false });
       }
-      const previousChief = replaced.body.archived.find((bot: { chiefOfStaff: boolean }) => bot.chiefOfStaff);
-      if (previousChief) await api("PATCH", `/api/bots/${previousChief.id}`, { hidden: false, chiefOfStaff: true });
 
       for (const bot of [first, second, hidden, ...imported.body.bots]) {
         expect((await api("DELETE", `/api/bots/${bot.id}`)).status).toBe(200);
@@ -1097,7 +1065,7 @@ describe("harness HTTP API", () => {
     }
   });
 
-  it("installs a complete bot package with a Chief, room, playbook, connector intent, and paused routine", async () => {
+  it("installs a complete coordinated bot package with a room, playbook, connector intent, and paused routine", async () => {
     const packageFile = {
       format: "openmaus.package",
       version: 1,
@@ -1134,7 +1102,6 @@ describe("harness HTTP API", () => {
             appearance: { color: "green" },
           },
         ],
-        chiefOfStaff: "scout",
         rooms: [{
           key: "signals",
           name: "Signal Room",
@@ -1171,7 +1138,6 @@ describe("harness HTTP API", () => {
     const scout = installed.body.bots.find((bot: { name: string }) => bot.name.startsWith("Package Scout"));
     const editor = installed.body.bots.find((bot: { name: string }) => bot.name.startsWith("Package Editor"));
     expect(scout).toMatchObject({
-      chiefOfStaff: true,
       composio: false,
       playbooks: [{ key: "signal-check", instructions: "Keep the source URL and confidence." }],
       installedPackage: {
@@ -1254,7 +1220,6 @@ describe("harness HTTP API", () => {
       autoApprove: true,
       alwaysAllow: ["Bash:git"],
       approvePeerComms: true,
-      chiefOfStaff: true,
       composio: true,
       computer: "off",
     });
@@ -1279,7 +1244,6 @@ describe("harness HTTP API", () => {
             threadId: trusted.threadId,
             autoApprove: true,
             alwaysAllow: ["Bash"],
-            chiefOfStaff: true,
             approvePeerComms: false,
             composio: true,
             computer: "local",
@@ -1302,7 +1266,6 @@ describe("harness HTTP API", () => {
     // EVERY privilege-bearing field lands at its safe default
     expect(impostor.autoApprove).toBeUndefined();
     expect(impostor.alwaysAllow).toBeUndefined();
-    expect(impostor.chiefOfStaff).toBeUndefined();
     expect(impostor.approvePeerComms).toBeUndefined();
     expect(impostor.composio).toBe(false);
     expect(impostor.computer).toBeUndefined();
@@ -1320,14 +1283,9 @@ describe("harness HTTP API", () => {
       autoApprove: true,
       alwaysAllow: ["Bash:git"],
       approvePeerComms: true,
-      chiefOfStaff: true,
       composio: true,
       computer: "off",
     });
-    // the single-Chief invariant survives the manifest's chiefOfStaff claim
-    expect(after.bots.filter((bot: { chiefOfStaff?: boolean }) => bot.chiefOfStaff).map((bot: { id: string }) => bot.id)).toEqual([
-      trusted.id,
-    ]);
 
     // a legacy v1 file carries a room block; import ignores it entirely —
     // it neither creates a room nor touches the existing one sharing its name
@@ -2324,4 +2282,3 @@ describe("instance CLI override API", () => {
     expect((await slowConfigWrite).status).toBe(200);
   });
 });
-

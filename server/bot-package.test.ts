@@ -28,7 +28,6 @@ const validPackage: any = {
         autoApprove: true,
       },
     ],
-    chiefOfStaff: "lead",
     rooms: [
       {
         key: "desk",
@@ -64,23 +63,24 @@ describe("bot packages", () => {
     });
   });
 
-  it("round-trips one Chief-of-Staff-readable Markdown playbook", () => {
+  it("round-trips one coordinator-readable Markdown playbook", () => {
     const markdown = renderBotPackageMarkdown(parseBotPackage(validPackage));
     expect(markdown).toContain("## Activation");
-    expect(markdown).toContain("Give this file to your Chief of Staff");
+    expect(markdown).toContain("## Coordination");
+    expect(markdown).toContain("host runtime owns planning");
     expect(markdown).not.toContain("autoApprove");
     expect(parseBotPackage(markdown).package).toMatchObject({
       id: "research-desk",
-      chiefOfStaff: "lead",
       agents: [{ key: "lead", name: "Ada" }],
     });
   });
 
-  it("rejects dangling agent, room, playbook, chief, and routine references", () => {
+  it("rejects dangling agent, room, playbook, and routine references", () => {
+    const retiredLeadershipField = ["chief", "Of", "Staff"].join("");
     expect(() => parseBotPackage({
       ...validPackage,
-      package: { ...validPackage.package, chiefOfStaff: "missing" },
-    })).toThrow("Unknown Chief of Staff");
+      package: { ...validPackage.package, [retiredLeadershipField]: "lead" },
+    })).toThrow("Unrecognized key");
     expect(() => parseBotPackage({
       ...validPackage,
       package: {
@@ -90,4 +90,3 @@ describe("bot packages", () => {
     })).toThrow("unknown playbook");
   });
 });
-
