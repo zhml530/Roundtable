@@ -151,7 +151,7 @@ export function Composer({
   const { capabilities } = useDesktopCapabilities();
   // Unified target: a 1:1 bot thread or a room. In a room the @ picker
   // offers members plus @everyone; mentions constrain Coordinator assignment.
-  const runActive = Boolean(group?.coordination && ["planning", "running", "paused", "reviewing"].includes(group.coordination.status));
+  const runActive = Boolean(group?.coordination && ["planning", "validating", "running", "paused", "reviewing"].includes(group.coordination.status));
   const locked = setupLocked || runActive;
   const busy = group ? Boolean(group.busyBotId) : Boolean(bot?.busy);
   // an engine with a live session takes a message INTO the running turn;

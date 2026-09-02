@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   DATA_DIR,
+  coordinatorConfig,
   instanceConfigs,
   loadConfig,
   parseConfigPatch,
@@ -69,6 +70,27 @@ describe("configuration boundaries", () => {
     expect(() => parseConfigPatch({ features: { skillRecorder: "yes" } })).toThrow(
       "features.skillRecorder",
     );
+  });
+
+  it("validates coordinator model and runtime policy settings", () => {
+    const parsed = parseConfigPatch({
+      coordinator: {
+        primary: { instanceId: "copilot", model: "gpt-5", effort: "high" },
+        backup: { instanceId: "claude", model: "sonnet" },
+        failureMode: "fallback",
+        preset: "quality",
+        planningTimeoutMs: 180_000,
+        planningRetries: 2,
+        maxConcurrency: 6,
+        maxFixCycles: 3,
+        maxRunMinutes: 90,
+        requireHighRiskReview: true,
+      },
+    });
+    expect(parsed.coordinator?.primary?.instanceId).toBe("copilot");
+    expect(parsed.coordinator?.failureMode).toBe("fallback");
+    expect(coordinatorConfig({}).planningTimeoutMs).toBe(120_000);
+    expect(() => parseConfigPatch({ coordinator: { maxConcurrency: 0 } })).toThrow("coordinator.maxConcurrency");
   });
 
 });

@@ -10,6 +10,7 @@ import {
   fallbackPlan,
   normalizeCoordinationPlan,
   reviewApproved,
+  validateCoordinationPlan,
   type CoordinationBot,
   type CoordinationRun,
 } from "./coordination.ts";
@@ -25,6 +26,16 @@ const bots: CoordinationBot[] = [
   { id: "arch", name: "Ari", title: "Architect", description: "designs systems", model: "m" },
   { id: "test", name: "Tess", title: "QA Tester", description: "tests acceptance criteria", model: "m" },
 ];
+const policy = () => ({
+  primary: { instanceId: "coordinator", model: "planner" },
+  failureMode: "pause" as const,
+  planningTimeoutMs: 10_000,
+  planningRetries: 0,
+  maxConcurrency: 4,
+  maxFixCycles: 2,
+  maxRunMinutes: 60,
+  requireHighRiskReview: true,
+});
 
 describe("Coordinator domain", () => {
   it("assigns four distinct bots from profile evidence", () => {
@@ -62,6 +73,20 @@ describe("Coordinator domain", () => {
     expect(reviewApproved("probably okay")).toBe(false);
   });
 
+  it("rejects unknown dependencies and cyclic DAGs", () => {
+    expect(() => validateCoordinationPlan({
+      version: 1, goal: "bad",
+      tasks: [{ id: "a", title: "A", description: "A", dependsOn: ["missing"] }],
+    })).toThrow("unknown dependency");
+    expect(() => validateCoordinationPlan({
+      version: 1, goal: "cycle",
+      tasks: [
+        { id: "a", title: "A", description: "A", dependsOn: ["b"] },
+        { id: "b", title: "B", description: "B", dependsOn: ["a"] },
+      ],
+    })).toThrow("dependency cycle");
+  });
+
   it("provides a one-task fallback for a simple goal", () => {
     const plan = fallbackPlan("demo");
     expect(plan.tasks.map((task) => task.role)).toEqual(["developer"]);
@@ -71,7 +96,9 @@ describe("Coordinator domain", () => {
     const run: CoordinationRun = {
       id: "run", groupId: "room", goal: "ship", status: "completed", fixCycles: 0,
       plannerBotId: "arch", plannerBotName: "Ari", plannerSelectionReason: "profile match",
-      requestedBotIds: [], policySnapshot: { maxConcurrency: 4, maxFixCycles: 2, requirePlanApproval: false },
+      requestedBotIds: [], policySnapshot: { maxConcurrency: 4, maxFixCycles: 2, requirePlanApproval: false, planningRetries: 1, maxRunMinutes: 60, requireHighRiskReview: true, failureMode: "pause" },
+      coordinatorSnapshot: { requestedModel: { instanceId: "coordinator", model: "planner" }, modelPolicyVersion: 1, promptVersion: "test", runtimePolicyVersion: 1, planningBudget: { timeoutMs: 10_000 } },
+      planRevisions: [],
       roles: {
         architect: { botId: "arch", botName: "Ari" }, developer: { botId: "dev", botName: "Dara" },
         tester: { botId: "test", botName: "Tess" }, reviewer: { botId: "review", botName: "Rae" },
@@ -95,16 +122,17 @@ describe("Coordinator domain", () => {
     const manager = new CoordinationManager({
       file: join(dir, "runs.json"),
       groupBots: () => bots,
+      coordinatorPolicy: policy,
+      runCoordinatorTurn: async () => ({ text: JSON.stringify([
+        { title: "Design", description: "Design interfaces", assignee: "architect", role: "architect" },
+        { title: "Build", description: "Implement design", assignee: "developer", role: "developer", dependsOn: ["Design"] },
+        { title: "Test", description: "Verify build", assignee: "tester", role: "tester", dependsOn: ["Build"] },
+        { title: "Review", description: "Review evidence", assignee: "reviewer", role: "reviewer", dependsOn: ["Test"] },
+      ]) }),
       createTask: () => ({ threadId: `thread-${++threads}` }),
       runBotTurn: async () => {
         calls += 1;
-        if (calls === 1) return { text: JSON.stringify([
-          { title: "Design", description: "Design interfaces", assignee: "architect", role: "architect" },
-          { title: "Build", description: "Implement design", assignee: "developer", role: "developer", dependsOn: ["Design"] },
-          { title: "Test", description: "Verify build", assignee: "tester", role: "tester", dependsOn: ["Build"] },
-          { title: "Review", description: "Review evidence", assignee: "reviewer", role: "reviewer", dependsOn: ["Test"] },
-        ]) };
-        return { text: calls >= 5 ? "VERDICT: APPROVED" : `worker output ${calls}` };
+        return { text: calls >= 4 ? "VERDICT: APPROVED" : `worker output ${calls}` };
       },
       appendChannelMessage: (_groupId, text) => channelMessages.push(text),
     });
@@ -125,12 +153,13 @@ describe("Coordinator domain", () => {
     const manager = new CoordinationManager({
       file: join(dir, "runs.json"),
       groupBots: () => bots,
+      coordinatorPolicy: policy,
+      runCoordinatorTurn: async () => ({ text: JSON.stringify([
+        { title: "Verify Windows", description: "Run Windows verification", assignee: "tester", role: "tester" },
+      ]) }),
       createTask: (_botId, title) => ({ threadId: title }),
       runBotTurn: async () => {
         calls += 1;
-        if (calls === 1) return { text: JSON.stringify([
-          { title: "Verify Windows", description: "Run Windows verification", assignee: "tester", role: "tester" },
-        ]) };
         return { text: "verified" };
       },
     });
@@ -142,6 +171,32 @@ describe("Coordinator domain", () => {
     expect(run.tasks.find((task) => task.id !== "planning")?.botId).toBe("test");
   });
 
+  it("uses the configured backup and blocks instead of inventing a fallback DAG", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "roundtable-coordination-fallback-"));
+    dirs.push(dir);
+    const attempted: string[] = [];
+    const manager = new CoordinationManager({
+      file: join(dir, "runs.json"),
+      groupBots: () => bots,
+      coordinatorPolicy: () => ({ ...policy(), backup: { instanceId: "backup", model: "backup-planner" }, failureMode: "fallback" }),
+      runCoordinatorTurn: async ({ selection }) => {
+        attempted.push(selection.instanceId);
+        if (selection.instanceId === "coordinator") throw new Error("primary unavailable");
+        return { text: "not valid JSON" };
+      },
+      createTask: () => ({ threadId: "should-not-run" }),
+      runBotTurn: async () => ({ text: "should not run" }),
+    });
+
+    await manager.start("room", "Plan safely");
+    await vi.waitFor(() => expect(manager.latest("room")?.status).toBe("planning_blocked"));
+    const run = manager.latest("room")!;
+    expect(attempted).toEqual(["coordinator", "backup"]);
+    expect(run.tasks).toEqual([]);
+    expect(run.planRevisions.map((revision) => revision.model.instanceId)).toEqual(["coordinator", "backup"]);
+    expect(run.error).toBeTruthy();
+  });
+
   it("turns reviewer rejection into an automatic fix, test, and re-review chain", async () => {
     const dir = mkdtempSync(join(tmpdir(), "roundtable-coordination-fix-"));
     dirs.push(dir);
@@ -150,17 +205,18 @@ describe("Coordinator domain", () => {
     const manager = new CoordinationManager({
       file: join(dir, "runs.json"),
       groupBots: () => bots,
+      coordinatorPolicy: policy,
+      runCoordinatorTurn: async () => ({ text: JSON.stringify([
+        { title: "Design", description: "Design", assignee: "architect" },
+        { title: "Build", description: "Build", assignee: "developer", dependsOn: ["Design"] },
+        { title: "Test", description: "Test", assignee: "tester", dependsOn: ["Build"] },
+        { title: "Review", description: "Review", assignee: "reviewer", dependsOn: ["Test"] },
+      ]) }),
       createTask: () => ({ threadId: `thread-${++threads}` }),
       runBotTurn: async () => {
         calls += 1;
-        if (calls === 1) return { text: JSON.stringify([
-          { title: "Design", description: "Design", assignee: "architect" },
-          { title: "Build", description: "Build", assignee: "developer", dependsOn: ["Design"] },
-          { title: "Test", description: "Test", assignee: "tester", dependsOn: ["Build"] },
-          { title: "Review", description: "Review", assignee: "reviewer", dependsOn: ["Test"] },
-        ]) };
-        if (calls === 5) return { text: "Missing edge-case coverage\nVERDICT: CHANGES_REQUESTED" };
-        if (calls >= 8) return { text: "VERDICT: APPROVED" };
+        if (calls === 4) return { text: "Missing edge-case coverage\nVERDICT: CHANGES_REQUESTED" };
+        if (calls >= 7) return { text: "VERDICT: APPROVED" };
         return { text: `worker output ${calls}` };
       },
     });
@@ -183,18 +239,20 @@ describe("Coordinator domain", () => {
     const manager = new CoordinationManager({
       file: join(dir, "runs.json"),
       groupBots: () => bots,
+      coordinatorPolicy: policy,
+      runCoordinatorTurn: async () => {
+        calls += 1;
+        await planningGate;
+        return { text: JSON.stringify([
+          { title: "Design", description: "Design", assignee: "architect" },
+          { title: "Build", description: "Build", assignee: "developer", dependsOn: ["Design"] },
+          { title: "Test", description: "Test", assignee: "tester", dependsOn: ["Build"] },
+          { title: "Review", description: "Review", assignee: "reviewer", dependsOn: ["Test"] },
+        ]) };
+      },
       createTask: (_botId, title) => ({ threadId: title }),
       runBotTurn: async () => {
         calls += 1;
-        if (calls === 1) {
-          await planningGate;
-          return { text: JSON.stringify([
-            { title: "Design", description: "Design", assignee: "architect" },
-            { title: "Build", description: "Build", assignee: "developer", dependsOn: ["Design"] },
-            { title: "Test", description: "Test", assignee: "tester", dependsOn: ["Build"] },
-            { title: "Review", description: "Review", assignee: "reviewer", dependsOn: ["Test"] },
-          ]) };
-        }
         return { text: calls >= 5 ? "VERDICT: APPROVED" : "done" };
       },
     });

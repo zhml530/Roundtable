@@ -36,6 +36,7 @@ import * as box from "./box.ts";
 import * as composio from "./composio.ts";
 import {
   ensureDirs,
+  coordinatorConfig,
   instanceConfigs,
   loadConfig,
   parseConfigPatch,
@@ -120,7 +121,7 @@ import { SPAWNED_PROXIES } from "./proxy-paths.ts";
 import { loadBundledSkills, loadUserSkills, mergeSkills, renderSkillInstructions, selectBundledSkills } from "./skill-library.ts";
 import { installedPlaybookInstructions } from "./installed-playbooks.ts";
 import { createBotPackageExport } from "./package-export.ts";
-import { CoordinationManager } from "./coordination.ts";
+import { COORDINATOR_SYSTEM_PROMPT, CoordinationManager } from "./coordination.ts";
 
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
 const WEBHOOK_PORT = Number(process.env.OMB_WEBHOOK_PORT || PORT + 1);
@@ -1661,6 +1662,77 @@ coordination = new CoordinationManager({
       text,
     });
   },
+  coordinatorPolicy: () => {
+    const configured = coordinatorConfig(cfg);
+    const primary = configured.primary ?? bootSelection;
+    if (!primary.instanceId || !primary.model) {
+      throw new Error("Configure a Coordinator model in Settings before starting a channel run");
+    }
+    return {
+      primary,
+      backup: configured.backup,
+      failureMode: configured.failureMode,
+      planningTimeoutMs: configured.planningTimeoutMs,
+      planningRetries: configured.planningRetries,
+      maxConcurrency: configured.maxConcurrency,
+      maxFixCycles: configured.maxFixCycles,
+      maxRunMinutes: configured.maxRunMinutes,
+      maxTokens: configured.maxTokens,
+      maxCostUsd: configured.maxCostUsd,
+      requireHighRiskReview: configured.requireHighRiskReview,
+    };
+  },
+  runCoordinatorTurn: ({ runId, revision, selection, prompt, timeoutMs, signal }) => new Promise((resolve, reject) => {
+    const instance = registry.get(selection.instanceId);
+    if (!instance) {
+      reject(new Error(`Coordinator engine ${selection.instanceId} is unavailable`));
+      return;
+    }
+    const threadId = `coordinator:${runId}:planning:${revision}:${randomUUID()}`;
+    let text = "";
+    let settled = false;
+    let runtimeError: string | undefined;
+    const finish = (error?: Error, usage?: { input: number; output: number }, cost?: number | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unsubscribe();
+      signal.removeEventListener("abort", abort);
+      if (error) reject(error);
+      else resolve({ text, usage: usage ? { ...usage, cost } : undefined });
+    };
+    const unsubscribe = bus.subscribe((event: RuntimeEvent) => {
+      if (event.threadId !== threadId) return;
+      if (event.type === "item.completed" && event.itemType === "assistant_text") {
+        text += `${text ? "\n" : ""}${event.text}`;
+      } else if (event.type === "runtime.error") {
+        runtimeError = event.message;
+      } else if (event.type === "turn.completed") {
+        finish(event.ok ? undefined : new Error(runtimeError || event.stopReason || "Coordinator model failed"), event.usage, event.cost);
+      }
+    });
+    const interrupt = () => instance.adapter.interruptTurn(threadId).catch(() => {});
+    const abort = () => {
+      void interrupt();
+      finish(new Error("Coordinator planning was cancelled"));
+    };
+    const timer = setTimeout(() => {
+      void interrupt();
+      finish(new Error(`Coordinator planning timed out after ${Math.round(timeoutMs / 1000)} seconds`));
+    }, timeoutMs);
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) {
+      abort();
+      return;
+    }
+    void instance.adapter.sendTurn({
+      threadId,
+      text: prompt,
+      model: selection.model,
+      effort: selection.effort,
+      system: COORDINATOR_SYSTEM_PROMPT,
+    }).catch((error) => finish(error instanceof Error ? error : new Error(String(error))));
+  }),
 });
 
 // Webhook definitions are independent from calendar schedules, but every
@@ -2336,6 +2408,7 @@ function stderrOf(err: unknown): string {
 }
 
 function configStatus() {
+  const coordinator = coordinatorConfig(cfg);
   return {
     xai: { configured: Boolean(cfg.xai?.key) },
     composio: {
@@ -2352,6 +2425,7 @@ function configStatus() {
     profile: { name: cfg.profile?.name ?? "", email: cfg.profile?.email ?? "" },
     rooms: { turnTimeoutMinutes: roomTurnTimeoutMinutes(cfg) },
     features: { skillRecorder: skillRecorderEnabled(cfg) },
+    coordinator,
   };
 }
 
@@ -3543,6 +3617,13 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
         return json(res, 409, { error: error instanceof Error ? error.message : String(error) });
       }
     }
+    if (path === "/api/coordinator/test" && method === "POST") {
+      try {
+        return json(res, 200, await coordination!.testCoordinator());
+      } catch (error) {
+        return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
     m = path.match(/^\/api\/groups\/([\w-]+)\/read$/);
     if (m && method === "POST") {
       const group = store.patchGroup(m[1], { unread: false });
@@ -4355,7 +4436,8 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
           key !== "tts" &&
           key !== "imageGen" &&
           key !== "rooms" &&
-          key !== "features",
+          key !== "features" &&
+          key !== "coordinator",
       );
       if (reloadKeys.length > 0) await reloadProviders();
       const status = configStatus();

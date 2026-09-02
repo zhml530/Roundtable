@@ -3,7 +3,7 @@
 // is the stuff shared by every bot: who you are, your keys, and the
 // machine your bots can borrow.
 import { useEffect, useRef, useState } from "react";
-import { Coins, KeyRound, Search, Terminal, User, X } from "lucide-react";
+import { Coins, KeyRound, Search, Sparkles, Terminal, User, X } from "lucide-react";
 import { api, useStore, type AppSettingsSection, type ConfigStatus } from "@/state/store";
 import { analyticsEnabled, setAnalyticsEnabled } from "@/lib/analytics";
 import { skillRecorderEnabled } from "@/lib/feature-flags";
@@ -17,6 +17,7 @@ import { SkinPicker } from "./SkinPicker";
 import { RoomTurnTimeoutSettings } from "./RoomTurnTimeoutSettings";
 import { TranscriptionSettings } from "./TranscriptionSettings";
 import { cn } from "@/lib/cn";
+import { CoordinatorSettings } from "./CoordinatorSettings";
 
 const SECTIONS: Array<{
   id: AppSettingsSection;
@@ -27,6 +28,7 @@ const SECTIONS: Array<{
   { id: "general", label: "General", icon: User, keywords: ["profile", "name", "email", "skin", "theme", "appearance", "analytics", "updates"] },
   { id: "connections", label: "Connections", icon: KeyRound, keywords: ["keys", "api", "composio", "box", "xai"] },
   { id: "engines", label: "Engines", icon: Terminal, keywords: ["models", "claude", "grok", "providers", "cli"] },
+  { id: "coordinator", label: "Coordinator", icon: Sparkles, keywords: ["planner", "dag", "policy", "fallback", "runtime"] },
   { id: "usage", label: "Usage", icon: Coins, keywords: ["tokens", "cost", "billing"] },
 ];
 
@@ -406,6 +408,7 @@ export function SettingsModal() {
                 <EnginesSettings />
               </Card>
             )}
+            {section === "coordinator" && <CoordinatorSettings />}
             {section === "usage" && <UsageSection />}
           </div>
         </div>

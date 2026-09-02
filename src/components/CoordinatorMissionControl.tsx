@@ -76,7 +76,7 @@ export function CoordinatorMissionControl({ group }: { group: Group }) {
     );
   }
 
-  const active = ["planning", "running", "paused", "reviewing"].includes(run.status);
+  const active = ["planning", "validating", "running", "paused", "reviewing"].includes(run.status);
   return (
     <section className="mx-auto mb-2 w-full max-w-[900px] px-5" aria-label="DAG Mission Control">
       <div className="overflow-hidden rounded-2xl border border-hairline/50 bg-card shadow-sm">
@@ -90,17 +90,17 @@ export function CoordinatorMissionControl({ group }: { group: Group }) {
           {active && run.status !== "paused" && <button title="Pause new task dispatch" onClick={() => void update("pause")} disabled={busy !== null} className="rounded-lg p-1.5 text-ink-secondary hover:bg-raised hover:text-ink"><CirclePause size={16} /></button>}
           {run.status === "paused" && <button title="Resume" onClick={() => void update("resume")} disabled={busy !== null} className="rounded-lg p-1.5 text-accent hover:bg-raised"><CirclePlay size={16} /></button>}
           {active && <button title="Cancel run" onClick={() => void update("cancel")} disabled={busy !== null} className="rounded-lg p-1.5 text-ink-secondary hover:bg-danger/10 hover:text-danger"><Ban size={16} /></button>}
-          {["failed", "cancelled"].includes(run.status) && <button title="Retry run" onClick={() => void update("retry")} disabled={busy !== null} className="rounded-lg p-1.5 text-ink-secondary hover:bg-raised hover:text-ink"><RotateCcw size={16} /></button>}
+          {["planning_blocked", "failed", "cancelled"].includes(run.status) && <button title="Retry run" onClick={() => void update("retry")} disabled={busy !== null} className="rounded-lg p-1.5 text-ink-secondary hover:bg-raised hover:text-ink"><RotateCcw size={16} /></button>}
           <button onClick={() => setExpanded((value) => !value)} className="rounded-lg p-1 text-ink-secondary hover:bg-raised">{expanded ? <ChevronUp size={15} /> : <ChevronDown size={15} />}</button>
         </div>
 
         {expanded && <>
           <div className="grid gap-px border-b border-hairline/40 bg-hairline/30 sm:grid-cols-2">
-            <div className="bg-card px-3 py-2"><div className="text-[9.5px] font-semibold uppercase tracking-wider text-ink-secondary">Planner for this run</div><div className="truncate text-[12px] text-ink">{run.plannerBotName}</div><div className="truncate text-[10.5px] text-ink-secondary">{run.plannerSelectionReason}</div></div>
+            <div className="bg-card px-3 py-2"><div className="text-[9.5px] font-semibold uppercase tracking-wider text-ink-secondary">Coordinator model</div><div className="truncate text-[12px] text-ink">{run.coordinatorSnapshot.actualModel?.model ?? run.coordinatorSnapshot.requestedModel.model}</div><div className="truncate text-[10.5px] text-ink-secondary">{run.coordinatorSnapshot.actualModel?.instanceId ?? run.coordinatorSnapshot.requestedModel.instanceId} · {run.coordinatorSnapshot.promptVersion}</div></div>
             <div className="bg-card px-3 py-2"><div className="text-[9.5px] font-semibold uppercase tracking-wider text-ink-secondary">Policy</div><div className="truncate text-[12px] text-ink">Up to {run.policySnapshot.maxConcurrency} parallel · {run.policySnapshot.maxFixCycles} fix cycles</div><div className="truncate text-[10.5px] text-ink-secondary">Runtime Coordinator owns scheduling and controls</div></div>
           </div>
           <div className="max-h-[330px] overflow-auto bg-inset/40">
-            {run.status === "planning" && layout.nodes.length === 0 ? <div className="flex items-center justify-center gap-2 py-10 text-[13px] text-ink-secondary"><Loader2 size={15} className="animate-spin" /> {run.plannerBotName} is generating the DAG…</div> :
+            {(run.status === "planning" || run.status === "validating") && layout.nodes.length === 0 ? <div className="flex items-center justify-center gap-2 py-10 text-[13px] text-ink-secondary"><Loader2 size={15} className="animate-spin" /> Coordinator Intelligence is {run.status === "validating" ? "being validated" : "generating the DAG"}…</div> :
             <div className="relative" style={{ width: layout.width, height: layout.height }}>
               <svg className="pointer-events-none absolute inset-0" width={layout.width} height={layout.height} aria-hidden="true">
                 <defs><marker id={`dag-arrow-${run.id}`} markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" className="fill-ink-secondary/40" /></marker></defs>

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { z } from "zod";
 
 import { writeFileAtomic } from "./atomic.ts";
-import type { InstanceConfigMap } from "./contracts.ts";
+import { EFFORT_LEVELS, type InstanceConfigMap, type ModelSelection } from "./contracts.ts";
 import { parseJson, schemaIssue, type JsonObject, type JsonValue } from "./schema.ts";
 
 const optionalText = z.string().optional();
@@ -25,6 +25,25 @@ const roomConfigSchema = z.object({
 const featureConfigSchema = z.object({
   /** Experimental desktop workflow recorder. Hidden unless explicitly enabled. */
   skillRecorder: z.boolean().optional(),
+});
+const modelSelectionSchema = z.object({
+  instanceId: z.string().min(1),
+  model: z.string().min(1),
+  effort: z.enum(EFFORT_LEVELS).optional(),
+});
+const coordinatorConfigSchema = z.object({
+  primary: modelSelectionSchema.optional(),
+  backup: modelSelectionSchema.optional(),
+  failureMode: z.enum(["pause", "fallback"]).default("pause"),
+  preset: z.enum(["quality", "balanced", "economy"]).default("balanced"),
+  planningTimeoutMs: z.number().int().min(10_000).max(600_000).default(120_000),
+  planningRetries: z.number().int().min(0).max(3).default(1),
+  maxConcurrency: z.number().int().min(1).max(16).default(4),
+  maxFixCycles: z.number().int().min(0).max(10).default(2),
+  maxRunMinutes: z.number().int().min(1).max(1_440).default(60),
+  maxTokens: z.number().int().positive().optional(),
+  maxCostUsd: z.number().positive().optional(),
+  requireHighRiskReview: z.boolean().default(true),
 });
 const instanceConfigSchema = z.object({
   driver: z.string().min(1),
@@ -52,6 +71,7 @@ const appConfigSchema = z.object({
   profile: z.object({ name: optionalText, email: optionalText }).optional(),
   rooms: roomConfigSchema.optional(),
   features: featureConfigSchema.optional(),
+  coordinator: coordinatorConfigSchema.optional(),
   instances: instanceConfigMapSchema.optional(),
 });
 const appConfigPatchSchema = appConfigSchema.omit({ instances: true });
@@ -69,6 +89,20 @@ export interface AppConfig {
   rooms?: { turnTimeoutMinutes: number };
   /** Opt-in product experiments. Every flag defaults to disabled. */
   features?: { skillRecorder?: boolean };
+  coordinator?: {
+    primary?: ModelSelection;
+    backup?: ModelSelection;
+    failureMode: "pause" | "fallback";
+    preset: "quality" | "balanced" | "economy";
+    planningTimeoutMs: number;
+    planningRetries: number;
+    maxConcurrency: number;
+    maxFixCycles: number;
+    maxRunMinutes: number;
+    maxTokens?: number;
+    maxCostUsd?: number;
+    requireHighRiskReview: boolean;
+  };
   instances?: InstanceConfigMap;
 }
 export type ConfigPatch = z.output<typeof appConfigPatchSchema>;
@@ -93,6 +127,21 @@ export function roomTurnTimeoutMinutes(cfg: AppConfig): number {
 
 export function skillRecorderEnabled(cfg: AppConfig): boolean {
   return cfg.features?.skillRecorder === true;
+}
+
+export const DEFAULT_COORDINATOR_CONFIG: NonNullable<AppConfig["coordinator"]> = {
+  failureMode: "pause",
+  preset: "balanced",
+  planningTimeoutMs: 120_000,
+  planningRetries: 1,
+  maxConcurrency: 4,
+  maxFixCycles: 2,
+  maxRunMinutes: 60,
+  requireHighRiskReview: true,
+};
+
+export function coordinatorConfig(cfg: AppConfig): NonNullable<AppConfig["coordinator"]> {
+  return { ...DEFAULT_COORDINATOR_CONFIG, ...cfg.coordinator };
 }
 
 // OMB_DATA_DIR isolates test/soak rigs from the user's real fleet.
@@ -221,7 +270,7 @@ export function saveConfig(patch: Partial<AppConfig>): void {
     /* first write */
   }
   const checkedPatch = appConfigSchema.partial().parse(patch);
-  for (const key of ["xai", "composio", "box", "opencodeGo", "tts", "imageGen", "profile", "rooms", "features"] as const) {
+  for (const key of ["xai", "composio", "box", "opencodeGo", "tts", "imageGen", "profile", "rooms", "features", "coordinator"] as const) {
     const section = checkedPatch[key];
     if (!section) continue;
     const current = jsonObjectSchema.safeParse(disk[key]);
@@ -383,4 +432,3 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
   }
   return map;
 }
-

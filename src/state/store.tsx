@@ -106,7 +106,7 @@ export interface Message {
 }
 
 export type CoordinationRole = "architect" | "developer" | "tester" | "reviewer";
-export type CoordinationRunStatus = "planning" | "running" | "paused" | "reviewing" | "completed" | "failed" | "cancelled";
+export type CoordinationRunStatus = "planning" | "validating" | "planning_blocked" | "running" | "paused" | "reviewing" | "completed" | "failed" | "cancelled";
 export type CoordinationTaskStatus = "pending" | "ready" | "running" | "completed" | "failed" | "blocked" | "cancelled";
 
 export interface CoordinationTask {
@@ -125,6 +125,7 @@ export interface CoordinationTask {
   finishedAt?: number;
   attempt: number;
   fixCycle?: number;
+  usage?: { input: number; output: number; cost?: number | null };
 }
 
 export interface CoordinationRun {
@@ -133,11 +134,38 @@ export interface CoordinationRun {
   goal: string;
   status: CoordinationRunStatus;
   roles: Record<CoordinationRole, { botId: string; botName: string }>;
-  plannerBotId: string;
-  plannerBotName: string;
-  plannerSelectionReason: string;
+  plannerBotId?: string;
+  plannerBotName?: string;
+  plannerSelectionReason?: string;
   requestedBotIds: string[];
-  policySnapshot: { maxConcurrency: number; maxFixCycles: number; requirePlanApproval: boolean };
+  policySnapshot: {
+    maxConcurrency: number;
+    maxFixCycles: number;
+    requirePlanApproval: boolean;
+    planningRetries: number;
+    maxRunMinutes: number;
+    requireHighRiskReview: boolean;
+    failureMode: "pause" | "fallback";
+  };
+  coordinatorSnapshot: {
+    requestedModel: ModelSelection;
+    actualModel?: ModelSelection;
+    backupModel?: ModelSelection;
+    modelPolicyVersion: number;
+    promptVersion: string;
+    runtimePolicyVersion: number;
+    planningBudget: { timeoutMs: number; maxTokens?: number; maxCost?: number };
+  };
+  planRevisions: Array<{
+    revision: number;
+    at: number;
+    model: ModelSelection;
+    accepted: boolean;
+    reason?: string;
+    latencyMs: number;
+    usage?: { input: number; output: number; cost?: number | null };
+    fallbackReason?: string;
+  }>;
   tasks: CoordinationTask[];
   events: Array<{ id: string; at: number; type: "run" | "task" | "review" | "control"; message: string; taskId?: string }>;
   createdAt: number;
@@ -301,11 +329,27 @@ export interface ConfigStatus {
   profile?: { name: string; email: string };
   /** Experimental features are opt-in and default off when absent. */
   features?: { skillRecorder: boolean };
+  coordinator?: CoordinatorSettings;
+}
+
+export interface CoordinatorSettings {
+  primary?: ModelSelection;
+  backup?: ModelSelection;
+  failureMode: "pause" | "fallback";
+  preset: "quality" | "balanced" | "economy";
+  planningTimeoutMs: number;
+  planningRetries: number;
+  maxConcurrency: number;
+  maxFixCycles: number;
+  maxRunMinutes: number;
+  maxTokens?: number;
+  maxCostUsd?: number;
+  requireHighRiskReview: boolean;
 }
 
 export type ConfigStatusFrame = Pick<
   ConfigStatus,
-  "xai" | "composio" | "box" | "rooms" | "opencodeGo" | "tts" | "imageGen" | "profile" | "features"
+  "xai" | "composio" | "box" | "rooms" | "opencodeGo" | "tts" | "imageGen" | "profile" | "features" | "coordinator"
 >;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
@@ -319,6 +363,7 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     imageGen: frame.imageGen,
     profile: frame.profile,
     features: frame.features,
+    coordinator: frame.coordinator,
   };
 }
 
@@ -371,6 +416,7 @@ export type AppSettingsSection =
   | "general"
   | "connections"
   | "engines"
+  | "coordinator"
   | "computer"
   | "usage";
 

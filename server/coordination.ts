@@ -15,12 +15,14 @@ import {
   type StreamEvent,
   type TeamRunResult,
 } from "@open-multi-agent/core";
+import { z } from "zod";
+import type { ModelSelection } from "./contracts.ts";
 
 import { writeFileAtomic } from "./atomic.ts";
 import { DATA_DIR } from "./config.ts";
 
 export type CoordinationRole = "architect" | "developer" | "tester" | "reviewer";
-export type CoordinationRunStatus = "planning" | "running" | "paused" | "reviewing" | "completed" | "failed" | "cancelled";
+export type CoordinationRunStatus = "planning" | "validating" | "planning_blocked" | "running" | "paused" | "reviewing" | "completed" | "failed" | "cancelled";
 export type CoordinationTaskStatus = "pending" | "ready" | "running" | "completed" | "failed" | "blocked" | "cancelled";
 
 export interface CoordinationBot {
@@ -47,6 +49,7 @@ export interface CoordinationTask {
   finishedAt?: number;
   attempt: number;
   fixCycle?: number;
+  usage?: { input: number; output: number; cost?: number | null };
 }
 
 export interface CoordinationEvent {
@@ -63,11 +66,38 @@ export interface CoordinationRun {
   goal: string;
   status: CoordinationRunStatus;
   roles: Record<CoordinationRole, { botId: string; botName: string }>;
-  plannerBotId: string;
-  plannerBotName: string;
-  plannerSelectionReason: string;
+  plannerBotId?: string;
+  plannerBotName?: string;
+  plannerSelectionReason?: string;
   requestedBotIds: string[];
-  policySnapshot: { maxConcurrency: number; maxFixCycles: number; requirePlanApproval: boolean };
+  policySnapshot: {
+    maxConcurrency: number;
+    maxFixCycles: number;
+    requirePlanApproval: boolean;
+    planningRetries: number;
+    maxRunMinutes: number;
+    requireHighRiskReview: boolean;
+    failureMode: "pause" | "fallback";
+  };
+  coordinatorSnapshot: {
+    requestedModel: ModelSelection;
+    actualModel?: ModelSelection;
+    backupModel?: ModelSelection;
+    modelPolicyVersion: number;
+    promptVersion: string;
+    runtimePolicyVersion: number;
+    planningBudget: { timeoutMs: number; maxTokens?: number; maxCost?: number };
+  };
+  planRevisions: Array<{
+    revision: number;
+    at: number;
+    model: ModelSelection;
+    accepted: boolean;
+    reason?: string;
+    latencyMs: number;
+    usage?: { input: number; output: number; cost?: number | null };
+    fallbackReason?: string;
+  }>;
   tasks: CoordinationTask[];
   events: CoordinationEvent[];
   createdAt: number;
@@ -85,7 +115,21 @@ interface CoordinationFile {
 
 interface BotTurnResult {
   text: string;
-  usage?: { input: number; output: number };
+  usage?: { input: number; output: number; cost?: number | null };
+}
+
+export interface CoordinatorRuntimePolicy {
+  primary: ModelSelection;
+  backup?: ModelSelection;
+  failureMode: "pause" | "fallback";
+  planningTimeoutMs: number;
+  planningRetries: number;
+  maxConcurrency: number;
+  maxFixCycles: number;
+  maxRunMinutes: number;
+  maxTokens?: number;
+  maxCostUsd?: number;
+  requireHighRiskReview: boolean;
 }
 
 export interface CoordinationManagerOptions {
@@ -102,6 +146,15 @@ export interface CoordinationManagerOptions {
   }) => Promise<BotTurnResult>;
   interruptBotTurn?: (botId: string, threadId: string) => Promise<void>;
   appendChannelMessage?: (groupId: string, text: string) => void;
+  coordinatorPolicy: () => CoordinatorRuntimePolicy;
+  runCoordinatorTurn: (input: {
+    runId: string;
+    revision: number;
+    selection: ModelSelection;
+    prompt: string;
+    timeoutMs: number;
+    signal: AbortSignal;
+  }) => Promise<BotTurnResult>;
 }
 
 const ROLES: readonly CoordinationRole[] = ["architect", "developer", "tester", "reviewer"];
@@ -118,6 +171,61 @@ const ROLE_PROMPTS = {
   tester: "Own independent verification. Run relevant checks, test acceptance criteria and edge cases, and report exact failures with evidence.",
   reviewer: "Own the final gate. Review implementation and test evidence. End with exactly one line: VERDICT: APPROVED or VERDICT: CHANGES_REQUESTED. If requesting changes, list concrete fixes.",
 } as const satisfies Record<CoordinationRole, string>;
+
+export const COORDINATOR_PROMPT_VERSION = "coordinator-planner-v1";
+export const COORDINATOR_SYSTEM_PROMPT = [
+  "You are Roundtable Coordinator Intelligence, an untrusted planning dependency with no tools or execution authority.",
+  "Propose the smallest safe task DAG for the supplied goal and context.",
+  "Use only architect, developer, tester, or reviewer roles.",
+  "Return JSON only: an array of objects with title, description, role, assignee, and optional dependsOn title array.",
+  "Never claim that you changed runtime state, ran tools, approved actions, or completed tasks.",
+].join(" ");
+
+const coordinatorProposalSchema = z.array(z.object({
+  id: z.string().min(1).optional(),
+  title: z.string().min(1),
+  description: z.string().min(1),
+  role: z.enum(ROLES).optional(),
+  assignee: z.enum(ROLES).optional(),
+  dependsOn: z.array(z.string().min(1)).optional(),
+})).min(1).max(100);
+
+function parseCoordinatorProposal(text: string, goal: string): PlanArtifact {
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(text);
+  } catch {
+    throw new Error("Coordinator returned non-JSON output");
+  }
+  const parsed = coordinatorProposalSchema.safeParse(decoded);
+  if (!parsed.success) throw new Error(`Coordinator returned an invalid proposal: ${parsed.error.issues[0]?.message ?? "schema mismatch"}`);
+  const used = new Set<string>();
+  const withIds = parsed.data.map((task, index) => {
+    const generated = task.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const base = task.id ?? (generated || `task-${index + 1}`);
+    let id = base;
+    for (let suffix = 2; used.has(id); suffix += 1) id = `${base}-${suffix}`;
+    used.add(id);
+    return { ...task, id };
+  });
+  const references = new Map<string, string>();
+  for (const task of withIds) {
+    references.set(task.id, task.id);
+    references.set(task.title, task.id);
+  }
+  return {
+    version: 1,
+    goal,
+    tasks: withIds.map((task) => ({
+      id: task.id,
+      title: task.title,
+      description: task.description,
+      role: task.role,
+      assignee: task.assignee ?? task.role,
+      dependsOn: task.dependsOn?.map((dependency) => references.get(dependency) ?? dependency),
+    })),
+  };
+}
 
 interface CoordinationAssignments {
   architect: CoordinationBot;
@@ -185,25 +293,24 @@ function inferRole(task: PlanTaskArtifact, index: number, total: number): Coordi
 }
 
 /** Keep OMA's decomposition and dependencies, while binding every node to one concrete Roundtable role. */
-export function normalizeCoordinationPlan(plan: PlanArtifact, goal: string): PlanArtifact {
-  const ids = new Set(plan.tasks.map((task) => task.id));
+export function normalizeCoordinationPlan(plan: PlanArtifact, goal: string, requireHighRiskReview = true): PlanArtifact {
   const tasks = plan.tasks.map((task, index) => {
     const role = inferRole(task, index, plan.tasks.length);
     return {
       ...task,
       role,
       assignee: role,
-      dependsOn: (task.dependsOn ?? []).filter((id) => ids.has(id) && id !== task.id),
+      dependsOn: [...(task.dependsOn ?? [])],
     } satisfies PlanTaskArtifact;
   });
-  if (tasks.length === 0) return fallbackPlan(goal);
+  if (tasks.length === 0) return { version: 1, goal, tasks: [] };
 
   // Multi-step and risk-sensitive work gets a terminal Reviewer gate. A truly
   // simple goal may remain one task, which is the key Coordinator v2 cost rule.
   const terminalIds = tasks.filter((candidate) => !tasks.some((other) => other.dependsOn?.includes(candidate.id))).map((task) => task.id);
   const reviewerIsTerminal = tasks.some((task) => task.role === "reviewer" && terminalIds.includes(task.id));
   const highRisk = /\b(security|auth|payment|billing|production|deploy|delete|migration|permission|credential)\b|安全|生产|部署|删除|迁移|权限|凭据/i.test(goal);
-  if (!reviewerIsTerminal && (tasks.length > 1 || highRisk)) {
+  if (!reviewerIsTerminal && (tasks.length > 1 || (requireHighRiskReview && highRisk))) {
     tasks.push({
       id: `review-${randomUUID()}`,
       title: "Final implementation review",
@@ -215,6 +322,36 @@ export function normalizeCoordinationPlan(plan: PlanArtifact, goal: string): Pla
     });
   }
   return { version: 1, goal, tasks };
+}
+
+/** Runtime-owned validation. Intelligence output is never executable until this passes. */
+export function validateCoordinationPlan(plan: PlanArtifact): void {
+  if (!Array.isArray(plan.tasks) || plan.tasks.length === 0) throw new Error("The proposal contains no tasks");
+  if (plan.tasks.length > 100) throw new Error("The proposal exceeds the 100-task safety limit");
+  const ids = new Set<string>();
+  for (const task of plan.tasks) {
+    if (!task.id || ids.has(task.id)) throw new Error(`Task IDs must be non-empty and unique: ${task.id || "(empty)"}`);
+    ids.add(task.id);
+    if (!task.title?.trim() || !task.description?.trim()) throw new Error(`Task ${task.id} needs a title and description`);
+  }
+  for (const task of plan.tasks) {
+    for (const dependency of task.dependsOn ?? []) {
+      if (dependency === task.id) throw new Error(`Task ${task.id} cannot depend on itself`);
+      if (!ids.has(dependency)) throw new Error(`Task ${task.id} has unknown dependency ${dependency}`);
+    }
+  }
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const byId = new Map(plan.tasks.map((task) => [task.id, task]));
+  const visit = (id: string) => {
+    if (visiting.has(id)) throw new Error(`The proposal contains a dependency cycle at ${id}`);
+    if (visited.has(id)) return;
+    visiting.add(id);
+    for (const dependency of byId.get(id)?.dependsOn ?? []) visit(dependency);
+    visiting.delete(id);
+    visited.add(id);
+  };
+  for (const id of ids) visit(id);
 }
 
 export function fallbackPlan(goal: string): PlanArtifact {
@@ -301,10 +438,32 @@ export class CoordinationManager {
     return this.runs.filter((run) => run.groupId === groupId).sort((a, b) => b.createdAt - a.createdAt)[0];
   }
 
+  async testCoordinator(): Promise<{ ok: true; latencyMs: number; model: ModelSelection; taskCount: number }> {
+    const policy = this.options.coordinatorPolicy();
+    const controller = new AbortController();
+    const startedAt = this.now();
+    const result = await this.options.runCoordinatorTurn({
+      runId: `test-${randomUUID()}`,
+      revision: 1,
+      selection: policy.primary,
+      prompt: `${COORDINATOR_SYSTEM_PROMPT}\n\nGoal: Reply to a user greeting. Return a one-task JSON plan and nothing else.`,
+      timeoutMs: policy.planningTimeoutMs,
+      signal: controller.signal,
+    });
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(result.text);
+    } catch {
+      throw new Error("Coordinator returned non-JSON output");
+    }
+    if (!Array.isArray(parsed) || parsed.length < 1) throw new Error("Coordinator returned an empty or invalid plan");
+    return { ok: true, latencyMs: this.now() - startedAt, model: policy.primary, taskCount: parsed.length };
+  }
+
   validateStart(groupId: string, rawGoal: string): void {
     if (!rawGoal.trim()) throw new Error("Tell the coordinator what outcome you want");
     const existing = this.latest(groupId);
-    if (existing && ["planning", "running", "paused", "reviewing"].includes(existing.status)) {
+    if (existing && ["planning", "validating", "running", "paused", "reviewing"].includes(existing.status)) {
       throw new Error("This channel already has an active coordination run");
     }
     if (this.options.groupBots(groupId).length === 0) {
@@ -317,17 +476,29 @@ export class CoordinationManager {
     this.validateStart(groupId, goal);
     const bots = this.options.groupBots(groupId);
     const assigned = assignCoordinationRoles(bots);
-    const planner = assigned.architect;
+    const policy = this.options.coordinatorPolicy();
     const requested = requestedBots(goal, bots);
     const run: CoordinationRun = {
       id: randomUUID(), groupId, goal, status: "planning", tasks: [], events: [], createdAt: this.now(), fixCycles: 0,
-      plannerBotId: planner.id,
-      plannerBotName: planner.name,
-      plannerSelectionReason: roleScore(planner, "architect") > 0
-        ? "Best profile match for planning and architecture"
-        : "Best available channel member for this run",
       requestedBotIds: requested.map((bot) => bot.id),
-      policySnapshot: { maxConcurrency: Math.min(4, Math.max(1, bots.length)), maxFixCycles: 2, requirePlanApproval: false },
+      policySnapshot: {
+        maxConcurrency: Math.min(policy.maxConcurrency, Math.max(1, bots.length)),
+        maxFixCycles: policy.maxFixCycles,
+        requirePlanApproval: false,
+        planningRetries: policy.planningRetries,
+        maxRunMinutes: policy.maxRunMinutes,
+        requireHighRiskReview: policy.requireHighRiskReview,
+        failureMode: policy.failureMode,
+      },
+      coordinatorSnapshot: {
+        requestedModel: structuredClone(policy.primary),
+        backupModel: policy.backup ? structuredClone(policy.backup) : undefined,
+        modelPolicyVersion: 1,
+        promptVersion: COORDINATOR_PROMPT_VERSION,
+        runtimePolicyVersion: 1,
+        planningBudget: { timeoutMs: policy.planningTimeoutMs, maxTokens: policy.maxTokens, maxCost: policy.maxCostUsd },
+      },
+      planRevisions: [],
       roles: {
         architect: { botId: assigned.architect.id, botName: assigned.architect.name },
         developer: { botId: assigned.developer.id, botName: assigned.developer.name },
@@ -336,7 +507,7 @@ export class CoordinationManager {
       },
     };
     this.runs.push(run);
-    this.event(run, "run", `${planner.name} selected as this run's Planner`);
+    this.event(run, "run", `Coordinator Intelligence pinned to ${policy.primary.instanceId} / ${policy.primary.model}`);
     if (requested.length) this.event(run, "run", `Scheduling constraint: include ${requested.map((bot) => bot.name).join(", ")}`);
     this.event(run, "run", "Coordinator is turning the goal into an execution DAG");
     this.publish(run);
@@ -385,7 +556,7 @@ export class CoordinationManager {
 
   async retry(groupId: string, taskId?: string): Promise<CoordinationRun> {
     const previous = this.latest(groupId);
-    if (!previous || !["failed", "cancelled"].includes(previous.status)) throw new Error("Only a failed or cancelled run can be retried");
+    if (!previous || !["failed", "cancelled", "planning_blocked"].includes(previous.status)) throw new Error("Only a blocked, failed, or cancelled run can be retried");
     const failed = taskId ? previous.tasks.find((task) => task.id === taskId) : previous.tasks.find((task) => task.status === "failed");
     const goal = failed ? `${previous.goal}\n\nRetry failed task: ${failed.title}\nPrevious error: ${failed.error ?? "unknown"}` : previous.goal;
     return this.start(groupId, goal);
@@ -393,16 +564,16 @@ export class CoordinationManager {
 
   private requireActive(groupId: string): CoordinationRun {
     const run = this.latest(groupId);
-    if (!run || !["planning", "running", "paused", "reviewing"].includes(run.status)) throw new Error("This channel has no active coordination run");
+    if (!run || !["planning", "validating", "running", "paused", "reviewing"].includes(run.status)) throw new Error("This channel has no active coordination run");
     return run;
   }
 
   private async execute(run: CoordinationRun, assigned: CoordinationAssignments): Promise<void> {
     const controller = new AbortController();
+    const runTimer = setTimeout(() => controller.abort(), run.policySnapshot.maxRunMinutes * 60_000);
     this.controllers.set(run.id, controller);
     try {
       const bots = this.options.groupBots(run.groupId);
-      const planner = bots.find((bot) => bot.id === run.plannerBotId) ?? assigned.architect;
       const requested = bots.filter((bot) => run.requestedBotIds.includes(bot.id));
       const orchestrator = new OpenMultiAgent({
         defaultModel: "roundtable",
@@ -424,36 +595,56 @@ export class CoordinationManager {
         agents: ROLES.map((role) => ({ name: role, description: ROLE_PROMPTS[role], capabilities: [role], model: assigned[role].model || "roundtable", systemPrompt: ROLE_PROMPTS[role], adapter: adapters[role] })),
       });
 
-      const planningAdapter = new RoundtableAdapter((prompt, signal) => this.invokePlanning(run, planner, prompt, signal ?? controller.signal));
       let plan: PlanArtifact;
+      let pausedAfterPlanning = false;
       try {
-        const preview = await orchestrator.runTeam(team, run.goal, {
-          mode: "team",
-          planOnly: true,
-          coordinator: {
-            model: planner.model || "roundtable",
-            adapter: planningAdapter,
-            instructions: [
-              "Create the smallest concrete DAG that safely completes the goal.",
-              "Use only architect, developer, tester, reviewer as assignees.",
-              "A simple goal may be one task. Add Tester or a terminal Reviewer only when complexity or risk warrants it.",
-              requested.length ? `Scheduling constraint: the plan must include work for ${requested.map((bot) => bot.name).join(", ")}.` : "Choose only necessary channel members.",
-            ].join(" "),
+        const compiledContext = {
+          goal: run.goal,
+          constraints: requested.length
+            ? [`Include work for these bot IDs: ${requested.map((bot) => bot.id).join(", ")}`]
+            : [],
+          availableBots: bots.map((bot) => ({ id: bot.id, name: bot.name, capabilities: `${bot.title}: ${bot.description}`.slice(0, 500) })),
+          runtimePolicy: {
+            maxConcurrency: run.policySnapshot.maxConcurrency,
+            maxFixCycles: run.policySnapshot.maxFixCycles,
+            requireHighRiskReview: run.policySnapshot.requireHighRiskReview,
           },
-          abortSignal: controller.signal,
-        });
-        plan = normalizeCoordinationPlan(orchestrator.createPlanArtifact(preview), run.goal);
+        };
+        const proposal = await this.invokeCoordinatorPlanning(
+          run,
+          `Create the smallest safe DAG from this untrusted context.\n<runtime_context>\n${JSON.stringify(compiledContext)}\n</runtime_context>`,
+          controller.signal,
+        );
+        pausedAfterPlanning = run.status === "paused";
+        if (!pausedAfterPlanning) {
+          run.status = "validating";
+          this.publish(run);
+        }
+        plan = normalizeCoordinationPlan(parseCoordinatorProposal(proposal.text, run.goal), run.goal, run.policySnapshot.requireHighRiskReview);
+        validateCoordinationPlan(plan);
+        const revision = run.planRevisions.at(-1);
+        if (revision) revision.accepted = true;
       } catch (error) {
         if (controller.signal.aborted) throw error;
-        plan = fallbackPlan(run.goal);
-        this.event(run, "run", `Dynamic planning fell back to a deterministic DAG: ${error instanceof Error ? error.message : String(error)}`);
+        const reason = error instanceof Error ? error.message : String(error);
+        const revision = run.planRevisions.at(-1);
+        if (revision) {
+          revision.accepted = false;
+          revision.reason = reason;
+        }
+        run.status = "planning_blocked";
+        run.error = reason;
+        run.finishedAt = this.now();
+        this.event(run, "run", `Planning blocked: ${reason}`);
+        this.publish(run);
+        return;
       }
 
       const bound = this.bindRequestedBots(plan, requested, assigned);
       plan = bound.plan;
       const bindings = bound.bindings;
       run.tasks = plan.tasks.map((task) => this.toRunTask(task, assigned, undefined, bindings.get(task.id)));
-      run.status = run.status === "paused" ? "paused" : "running";
+      run.status = pausedAfterPlanning ? "paused" : "running";
       run.startedAt = this.now();
       this.event(run, "run", `DAG ready with ${run.tasks.length} tasks`);
       this.publish(run);
@@ -485,6 +676,7 @@ export class CoordinationManager {
         this.publish(run);
       }
     } finally {
+      clearTimeout(runTimer);
       this.controllers.delete(run.id);
       for (const role of ROLES) this.activeTaskByRole.delete(`${run.id}:${role}`);
     }
@@ -566,14 +758,64 @@ export class CoordinationManager {
     return { id: task.id, title: task.title, description: task.description, role, botId: bot.id, botName: bot.name, dependsOn: [...(task.dependsOn ?? [])], status: "pending", attempt: 1, fixCycle };
   }
 
-  private async invokePlanning(run: CoordinationRun, bot: CoordinationBot, prompt: string, signal: AbortSignal): Promise<BotTurnResult> {
-    let task = run.tasks.find((item) => item.id === "planning");
-    if (!task) {
-      task = { id: "planning", title: "Plan coordination run", description: run.goal, role: "architect", botId: bot.id, botName: bot.name, dependsOn: [], status: "running", attempt: 1, startedAt: this.now() };
-      run.tasks.push(task);
-      this.publish(run);
+  private async invokeCoordinatorPlanning(run: CoordinationRun, prompt: string, signal: AbortSignal): Promise<BotTurnResult> {
+    const selections = [run.coordinatorSnapshot.requestedModel];
+    if (run.policySnapshot.failureMode === "fallback" && run.coordinatorSnapshot.backupModel) {
+      selections.push(run.coordinatorSnapshot.backupModel);
     }
-    return this.invokeTask(run, task, prompt, signal);
+    let lastError: unknown;
+    for (let modelIndex = 0; modelIndex < selections.length; modelIndex += 1) {
+      const selection = selections[modelIndex]!;
+      for (let attempt = 0; attempt <= run.policySnapshot.planningRetries; attempt += 1) {
+        const startedAt = this.now();
+        const revision = run.planRevisions.length + 1;
+        try {
+          const result = await this.options.runCoordinatorTurn({
+            runId: run.id,
+            revision,
+            selection,
+            prompt,
+            timeoutMs: run.coordinatorSnapshot.planningBudget.timeoutMs,
+            signal,
+          });
+          run.coordinatorSnapshot.actualModel = structuredClone(selection);
+          run.planRevisions.push({
+            revision,
+            at: this.now(),
+            model: structuredClone(selection),
+            accepted: false,
+            latencyMs: this.now() - startedAt,
+            usage: result.usage,
+            fallbackReason: modelIndex > 0 ? (lastError instanceof Error ? lastError.message : String(lastError)) : undefined,
+          });
+          this.publish(run);
+          const planningTokens = (result.usage?.input ?? 0) + (result.usage?.output ?? 0);
+          if (run.coordinatorSnapshot.planningBudget.maxTokens !== undefined && planningTokens > run.coordinatorSnapshot.planningBudget.maxTokens) {
+            throw new Error(`Coordinator planning exceeded the ${run.coordinatorSnapshot.planningBudget.maxTokens}-token budget`);
+          }
+          if (run.coordinatorSnapshot.planningBudget.maxCost !== undefined && (result.usage?.cost ?? 0) > run.coordinatorSnapshot.planningBudget.maxCost) {
+            throw new Error(`Coordinator planning exceeded the $${run.coordinatorSnapshot.planningBudget.maxCost} cost budget`);
+          }
+          return result;
+        } catch (error) {
+          lastError = error;
+          if (!run.planRevisions.some((entry) => entry.revision === revision)) {
+            run.planRevisions.push({
+              revision,
+              at: this.now(),
+              model: structuredClone(selection),
+              accepted: false,
+              reason: error instanceof Error ? error.message : String(error),
+              latencyMs: this.now() - startedAt,
+              fallbackReason: modelIndex > 0 ? "Primary model attempts failed" : undefined,
+            });
+          }
+          this.event(run, "run", `Planning attempt ${attempt + 1} failed on ${selection.instanceId}: ${error instanceof Error ? error.message : String(error)}`);
+          this.publish(run);
+        }
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError ?? "Coordinator planning failed"));
   }
 
   private async invokeRole(run: CoordinationRun, role: CoordinationRole, prompt: string, signal: AbortSignal): Promise<BotTurnResult> {
@@ -592,6 +834,7 @@ export class CoordinationManager {
     }
     const result = await this.options.runBotTurn({ botId: task.botId, threadId: task.threadId, prompt, signal });
     task.output = result.text;
+    task.usage = result.usage;
     return result;
   }
 
@@ -666,11 +909,19 @@ export class CoordinationManager {
         this.runs = parsed.runs;
         for (const run of this.runs) {
           run.requestedBotIds ??= [];
-          run.policySnapshot ??= { maxConcurrency: 4, maxFixCycles: 2, requirePlanApproval: false };
-          run.plannerBotId ??= run.roles.architect.botId;
-          run.plannerBotName ??= run.roles.architect.botName;
-          run.plannerSelectionReason ??= "Recovered from an earlier Coordinator run";
-          if (["planning", "running", "paused", "reviewing"].includes(run.status)) {
+          run.policySnapshot.planningRetries ??= 1;
+          run.policySnapshot.maxRunMinutes ??= 60;
+          run.policySnapshot.requireHighRiskReview ??= true;
+          run.policySnapshot.failureMode ??= "pause";
+          run.coordinatorSnapshot ??= {
+            requestedModel: { instanceId: "", model: "" },
+            modelPolicyVersion: 1,
+            promptVersion: COORDINATOR_PROMPT_VERSION,
+            runtimePolicyVersion: 1,
+            planningBudget: { timeoutMs: 120_000 },
+          };
+          run.planRevisions ??= [];
+          if (["planning", "validating", "running", "paused", "reviewing"].includes(run.status)) {
             run.status = "failed";
             run.finishedAt = this.now();
             run.error = "Roundtable restarted while this run was active; retry to continue";
@@ -690,12 +941,15 @@ export class CoordinationManager {
 
 export function buildCoordinationReport(run: CoordinationRun): string {
   const duration = Math.max(0, (run.finishedAt ?? Date.now()) - (run.startedAt ?? run.createdAt));
+  const coordinatorUsage = run.planRevisions.reduce((sum, revision) => sum + (revision.usage?.input ?? 0) + (revision.usage?.output ?? 0), 0);
+  const botUsage = run.tasks.reduce((sum, task) => sum + (task.usage?.input ?? 0) + (task.usage?.output ?? 0), 0);
   const lines = [
     `# Coordinator report — ${run.status}`,
     "",
     `**Goal:** ${run.goal}`,
     `**Duration:** ${(duration / 1000).toFixed(1)}s`,
     `**Fix cycles:** ${run.fixCycles}`,
+    `**Usage:** ${coordinatorUsage.toLocaleString()} Coordinator tokens · ${botUsage.toLocaleString()} Bot tokens`,
     "",
     "## Tasks",
     ...run.tasks.map((task) => `- ${task.status === "completed" ? "✓" : task.status === "failed" ? "✗" : "•"} ${task.title} — ${task.botName} (${task.role})${task.error ? `: ${task.error}` : ""}${task.threadId ? ` [task ${task.threadId}]` : ""}`),
