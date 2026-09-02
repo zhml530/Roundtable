@@ -34,7 +34,6 @@ const validPackage: any = {
         name: "Research Desk",
         members: ["lead"],
         bulletin: "Cite sources.",
-        defaultResponder: { kind: "agent", agent: "lead" },
       },
     ],
     playbooks: [
@@ -52,7 +51,7 @@ const validPackage: any = {
 describe("bot packages", () => {
   it("parses the complete portable structure and strips authority fields", () => {
     const parsed = parseBotPackage(validPackage);
-    expect(parsed.package.rooms![0]?.defaultResponder).toEqual({ kind: "agent", agent: "lead" });
+    expect(parsed.package.rooms![0]).not.toHaveProperty("defaultResponder");
     expect(parsed.package.agents[0]).not.toHaveProperty("autoApprove");
     expect(packageAgentAsMember(parsed.package.agents[0]!)).toEqual({
       key: "lead",
@@ -80,6 +79,13 @@ describe("bot packages", () => {
     expect(() => parseBotPackage({
       ...validPackage,
       package: { ...validPackage.package, [retiredLeadershipField]: "lead" },
+    })).toThrow("Unrecognized key");
+    expect(() => parseBotPackage({
+      ...validPackage,
+      package: {
+        ...validPackage.package,
+        rooms: [{ ...validPackage.package.rooms[0], defaultResponder: { kind: "agent", agent: "lead" } }],
+      },
     })).toThrow("Unrecognized key");
     expect(() => parseBotPackage({
       ...validPackage,

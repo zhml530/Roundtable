@@ -78,12 +78,7 @@ const packageSchema = z.object({
       name: requiredText(100),
       members: z.array(key).min(1).max(200),
       bulletin: optionalText(12_000),
-      defaultResponder: z.discriminatedUnion("kind", [
-        z.object({ kind: z.literal("agent"), agent: key }),
-        z.object({ kind: z.literal("everyone") }),
-        z.object({ kind: z.literal("mentions") }),
-      ]),
-    })).max(30).optional(),
+    }).strict()).max(30).optional(),
     routines: z.array(z.object({
       key,
       name: requiredText(80),
@@ -184,9 +179,6 @@ export function parseBotPackage(value: JsonValue | ParsedBotPackage): ParsedBotP
     for (const member of members) {
       if (!agents.has(member)) throw new Error(`Room ${room.key} references unknown agent: ${member}`);
     }
-    if (room.defaultResponder.kind === "agent" && !members.has(room.defaultResponder.agent)) {
-      throw new Error(`Room ${room.key} has an unknown default responder`);
-    }
   }
   for (const routine of pkg.routines ?? []) {
     if (!agents.has(routine.agent)) throw new Error(`Routine ${routine.key} references unknown agent: ${routine.agent}`);
@@ -212,7 +204,7 @@ export function renderBotPackageMarkdown(document: ParsedBotPackage): string {
   const rooms = (pkg.rooms ?? []).map((room) => [
     `### ${room.name}`,
     `**Members:** ${room.members.map((key) => `\`${key}\``).join(", ")}`,
-    `**Default responder:** ${room.defaultResponder.kind === "agent" ? `\`${room.defaultResponder.agent}\`` : room.defaultResponder.kind}`,
+    "**Routing:** System Coordinator",
     "",
     room.bulletin,
   ].join("\n\n")).join("\n\n");

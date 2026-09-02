@@ -36,8 +36,9 @@ describe("Coordinator domain", () => {
     expect(new Set(Object.values(roles).map((bot) => bot.id)).size).toBe(4);
   });
 
-  it("rejects a channel that cannot provide all MVP roles", () => {
-    expect(() => assignCoordinationRoles(bots.slice(0, 3))).toThrow(/at least four/i);
+  it("reuses available bots when a channel has fewer than four members", () => {
+    const roles = assignCoordinationRoles(bots.slice(0, 1));
+    expect(Object.values(roles).every((bot) => bot.id === "dev")).toBe(true);
   });
 
   it("preserves generated dependencies and adds a terminal review gate", () => {
@@ -61,15 +62,16 @@ describe("Coordinator domain", () => {
     expect(reviewApproved("probably okay")).toBe(false);
   });
 
-  it("provides a deterministic four-stage fallback DAG", () => {
+  it("provides a one-task fallback for a simple goal", () => {
     const plan = fallbackPlan("demo");
-    expect(plan.tasks.map((task) => task.role)).toEqual(["architect", "developer", "tester", "reviewer"]);
-    expect(plan.tasks[3]?.dependsOn).toEqual(["verification"]);
+    expect(plan.tasks.map((task) => task.role)).toEqual(["developer"]);
   });
 
   it("builds a report with task receipts and a timeline", () => {
     const run: CoordinationRun = {
       id: "run", groupId: "room", goal: "ship", status: "completed", fixCycles: 0,
+      plannerBotId: "arch", plannerBotName: "Ari", plannerSelectionReason: "profile match",
+      requestedBotIds: [], policySnapshot: { maxConcurrency: 4, maxFixCycles: 2, requirePlanApproval: false },
       roles: {
         architect: { botId: "arch", botName: "Ari" }, developer: { botId: "dev", botName: "Dara" },
         tester: { botId: "test", botName: "Tess" }, reviewer: { botId: "review", botName: "Rae" },
@@ -114,6 +116,30 @@ describe("Coordinator domain", () => {
     expect(run.tasks.every((task) => task.threadId)).toBe(true);
     expect(run.tasks.at(-1)?.role).toBe("reviewer");
     expect(channelMessages.at(-1)).toContain("Coordinator report — completed");
+  });
+
+  it("treats a mention as a task-assignment constraint", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "roundtable-coordination-mention-"));
+    dirs.push(dir);
+    let calls = 0;
+    const manager = new CoordinationManager({
+      file: join(dir, "runs.json"),
+      groupBots: () => bots,
+      createTask: (_botId, title) => ({ threadId: title }),
+      runBotTurn: async () => {
+        calls += 1;
+        if (calls === 1) return { text: JSON.stringify([
+          { title: "Verify Windows", description: "Run Windows verification", assignee: "tester", role: "tester" },
+        ]) };
+        return { text: "verified" };
+      },
+    });
+
+    await manager.start("room", "@Tess verify Windows");
+    await vi.waitFor(() => expect(manager.latest("room")?.status).toBe("completed"), { timeout: 5_000 });
+    const run = manager.latest("room")!;
+    expect(run.requestedBotIds).toEqual(["test"]);
+    expect(run.tasks.find((task) => task.id !== "planning")?.botId).toBe("test");
   });
 
   it("turns reviewer rejection into an automatic fix, test, and re-review chain", async () => {

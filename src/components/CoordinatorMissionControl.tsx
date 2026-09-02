@@ -29,24 +29,21 @@ function elapsed(run: CoordinationRun): string {
 
 export function CoordinatorMissionControl({ group }: { group: Group }) {
   const { dispatch } = useStore();
-  const [goal, setGoal] = useState("");
   const [expanded, setExpanded] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const run = group.coordination;
   const layout = useMemo(() => layoutCoordinationDag(run?.tasks.filter((task) => task.id !== "planning") ?? []), [run?.tasks]);
 
-  const update = async (action: "start" | "pause" | "resume" | "cancel" | "retry") => {
+  const update = async (action: "pause" | "resume" | "cancel" | "retry") => {
     setBusy(action);
     setError(null);
     try {
-      const path = action === "start" ? "" : `/${action}`;
-      const result = await api(`/api/groups/${group.id}/coordination${path}`, {
+      const result = await api(`/api/groups/${group.id}/coordination/${action}`, {
         method: "POST",
-        body: action === "start" ? JSON.stringify({ goal }) : "{}",
+        body: "{}",
       });
       if (result.run) dispatch({ type: "groupPatched", group: { id: group.id, coordination: result.run } });
-      if (action === "start") setGoal("");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -69,25 +66,17 @@ export function CoordinatorMissionControl({ group }: { group: Group }) {
   if (!run) {
     return (
       <section className="mx-auto mb-2 w-full max-w-[900px] px-5" aria-label="Coordinator channel">
-        <form
-          className="rounded-2xl border border-accent/25 bg-gradient-to-r from-accent/[0.09] to-purple-500/[0.06] p-3"
-          onSubmit={(event) => { event.preventDefault(); if (goal.trim()) void update("start"); }}
-        >
+        <div className="rounded-2xl border border-accent/25 bg-gradient-to-r from-accent/[0.09] to-purple-500/[0.06] p-3">
           <div className="flex items-center gap-2 text-[12px] font-semibold uppercase tracking-[0.12em] text-accent"><Sparkles size={14} /> Coordinator Channel</div>
-          <div className="mt-2 flex gap-2">
-            <input value={goal} onChange={(event) => setGoal(event.target.value)} placeholder="Describe the outcome — Coordinator will build and run a DAG" className="min-w-0 flex-1 rounded-xl border border-hairline/50 bg-inset px-3 py-2 text-[13px] text-ink outline-none focus:border-accent" />
-            <button disabled={!goal.trim() || busy !== null || group.memberIds.length < 4} className="flex items-center gap-1.5 rounded-xl bg-accent px-3 py-2 text-[13px] font-semibold text-white disabled:opacity-50">
-              {busy ? <Loader2 size={14} className="animate-spin" /> : <GitBranch size={14} />} Build DAG
-            </button>
-          </div>
-          <div className="mt-1.5 text-[11.5px] text-ink-secondary">Needs 4 bots. Profiles are matched to Architect, Developer, Tester and Reviewer.</div>
+          <div className="mt-1.5 text-[12.5px] text-ink">Send a goal in the composer. Coordinator will choose the smallest safe DAG and assign the necessary Bots.</div>
+          <div className="mt-1 text-[11.5px] text-ink-secondary">Use @Bot as an assignment constraint, or @everyone to include every channel member.</div>
           {error && <div className="mt-2 text-[12px] text-danger">{error}</div>}
-        </form>
+        </div>
       </section>
     );
   }
 
-  const active = ["planning", "running", "paused"].includes(run.status);
+  const active = ["planning", "running", "paused", "reviewing"].includes(run.status);
   return (
     <section className="mx-auto mb-2 w-full max-w-[900px] px-5" aria-label="DAG Mission Control">
       <div className="overflow-hidden rounded-2xl border border-hairline/50 bg-card shadow-sm">
@@ -106,11 +95,12 @@ export function CoordinatorMissionControl({ group }: { group: Group }) {
         </div>
 
         {expanded && <>
-          <div className="grid grid-cols-2 gap-px border-b border-hairline/40 bg-hairline/30 sm:grid-cols-4">
-            {(["architect", "developer", "tester", "reviewer"] as const).map((role) => <div key={role} className="bg-card px-3 py-2"><div className="text-[9.5px] font-semibold uppercase tracking-wider text-ink-secondary">{role}</div><div className="truncate text-[12px] text-ink">{run.roles[role].botName}</div></div>)}
+          <div className="grid gap-px border-b border-hairline/40 bg-hairline/30 sm:grid-cols-2">
+            <div className="bg-card px-3 py-2"><div className="text-[9.5px] font-semibold uppercase tracking-wider text-ink-secondary">Planner for this run</div><div className="truncate text-[12px] text-ink">{run.plannerBotName}</div><div className="truncate text-[10.5px] text-ink-secondary">{run.plannerSelectionReason}</div></div>
+            <div className="bg-card px-3 py-2"><div className="text-[9.5px] font-semibold uppercase tracking-wider text-ink-secondary">Policy</div><div className="truncate text-[12px] text-ink">Up to {run.policySnapshot.maxConcurrency} parallel · {run.policySnapshot.maxFixCycles} fix cycles</div><div className="truncate text-[10.5px] text-ink-secondary">Runtime Coordinator owns scheduling and controls</div></div>
           </div>
           <div className="max-h-[330px] overflow-auto bg-inset/40">
-            {run.status === "planning" && layout.nodes.length === 0 ? <div className="flex items-center justify-center gap-2 py-10 text-[13px] text-ink-secondary"><Loader2 size={15} className="animate-spin" /> Architect is generating the DAG…</div> :
+            {run.status === "planning" && layout.nodes.length === 0 ? <div className="flex items-center justify-center gap-2 py-10 text-[13px] text-ink-secondary"><Loader2 size={15} className="animate-spin" /> {run.plannerBotName} is generating the DAG…</div> :
             <div className="relative" style={{ width: layout.width, height: layout.height }}>
               <svg className="pointer-events-none absolute inset-0" width={layout.width} height={layout.height} aria-hidden="true">
                 <defs><marker id={`dag-arrow-${run.id}`} markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" className="fill-ink-secondary/40" /></marker></defs>

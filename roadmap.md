@@ -39,7 +39,7 @@ flowchart LR
 - Bot Settings、Sidebar、Chat、Team Map 和 Team Library 不再显示领导身份或皇冠。
 - Package 直接使用 `Coordination` 语义，由宿主 Runtime 负责规划、委派、冲突处理和
   最终结果；旧领导格式不保留 reader 或兼容层。
-- 普通 Channel 消息继续使用 `defaultResponder`，结构化 Goal 则进入 Coordinator DAG；
+- 普通 Channel 消息统一进入系统 Coordinator；Bot 单聊仍由指定 Bot 直接处理；
   两者不再通过某个特殊 Bot 混合。
 
 ### Coordinator Channel

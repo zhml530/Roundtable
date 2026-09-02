@@ -1,9 +1,13 @@
 # Coordinator 完整替换 Chief of Staff 实施计划
 
-状态：已实施  
+状态：已被 [`../../cordinator.md`](../../cordinator.md) 取代
 Owner：Roundtable  
 目标版本：Coordinator v2  
-更新时间：2026-09-01
+更新时间：2026-09-02
+
+> 历史说明：本文保留 Chief of Staff 删除过程的决策记录，其中关于普通 Channel
+> `defaultResponder` 和独立 `Build DAG` 入口的方案已经失效。当前实现以根目录
+> `cordinator.md` 为准：所有用户 Channel 消息统一进入系统 Coordinator。
 
 实施结果：系统级 Coordinator 已成为唯一协调控制面；旧 Bot 领导字段、Prompt、
 授权、Agent 创建工具、Package 字段和 UI 已从当前产品与测试中删除。

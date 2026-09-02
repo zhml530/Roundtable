@@ -105,13 +105,8 @@ export interface Message {
   queueId?: string;
 }
 
-export type GroupDefaultResponder =
-  | { kind: "member"; botId: string }
-  | { kind: "everyone" }
-  | { kind: "mentions" };
-
 export type CoordinationRole = "architect" | "developer" | "tester" | "reviewer";
-export type CoordinationRunStatus = "planning" | "running" | "paused" | "completed" | "failed" | "cancelled";
+export type CoordinationRunStatus = "planning" | "running" | "paused" | "reviewing" | "completed" | "failed" | "cancelled";
 export type CoordinationTaskStatus = "pending" | "ready" | "running" | "completed" | "failed" | "blocked" | "cancelled";
 
 export interface CoordinationTask {
@@ -138,6 +133,11 @@ export interface CoordinationRun {
   goal: string;
   status: CoordinationRunStatus;
   roles: Record<CoordinationRole, { botId: string; botName: string }>;
+  plannerBotId: string;
+  plannerBotName: string;
+  plannerSelectionReason: string;
+  requestedBotIds: string[];
+  policySnapshot: { maxConcurrency: number; maxFixCycles: number; requirePlanApproval: boolean };
   tasks: CoordinationTask[];
   events: Array<{ id: string; at: number; type: "run" | "task" | "review" | "control"; message: string; taskId?: string }>;
   createdAt: number;
@@ -154,7 +154,6 @@ export interface Group {
   threadId: string;
   name: string;
   memberIds: string[];
-  defaultResponder: GroupDefaultResponder;
   bulletin: string;
   unread: boolean;
   createdAt: number;
@@ -456,7 +455,7 @@ export type Action =
   | {
       type: "patchGroup";
       groupId: string;
-      patch: Partial<Pick<Group, "name" | "bulletin" | "memberIds" | "defaultResponder" | "pinnedMessageId" | "section">>;
+      patch: Partial<Pick<Group, "name" | "bulletin" | "memberIds" | "pinnedMessageId" | "section">>;
     }
   | { type: "deleteGroup"; groupId: string }
   | { type: "toggleReaction"; threadId: string; messageId: string; emoji: string }

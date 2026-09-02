@@ -73,10 +73,8 @@ function GroupCall({ group, members }: { group: Group; members: Bot[] }) {
   const question = questionIn(messages);
   const membersRef = useRef(members);
   const busyRef = useRef(Boolean(group.busyBotId));
-  const defaultResponderRef = useRef(group.defaultResponder);
   membersRef.current = members;
   busyRef.current = Boolean(group.busyBotId);
-  defaultResponderRef.current = group.defaultResponder;
 
   const spokenIds = useRef<Set<string>>(new Set());
   const started = useRef(false);
@@ -246,13 +244,6 @@ function GroupCall({ group, members }: { group: Group; members: Bot[] }) {
       }
 
       const routed = routeSpokenGroupMessage(said, membersRef.current);
-      if (defaultResponderRef.current.kind === "mentions" && !routed.addressed) {
-        listen();
-        const names = membersRef.current.map((member) => member.name).join(", ");
-        setNote("Say a member's name" + (names ? " — " + names : "") + " — or say everyone.");
-        return;
-      }
-
       allowBargeIn.current = false;
       move(busyRef.current ? "working" : "sending");
       dispatch({ type: "sendGroup", groupId: group.id, text: routed.text });

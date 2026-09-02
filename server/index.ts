@@ -68,7 +68,6 @@ import {
   roomResponders,
   sectionKey,
   Store,
-  type GroupDefaultResponder,
   type GroupRecord,
   type Message,
   type TaskRecord,
@@ -1600,7 +1599,7 @@ coordination = new CoordinationManager({
     if (!group) return [];
     return group.memberIds.flatMap((botId) => {
       const bot = store.bot(botId);
-      return bot ? [{ id: bot.id, name: bot.name, title: bot.title, description: bot.description, model: bot.modelSelection.model }] : [];
+      return bot && !bot.hidden ? [{ id: bot.id, name: bot.name, title: bot.title, description: bot.description, model: bot.modelSelection.model }] : [];
     });
   },
   createTask: (botId, title) => {
@@ -1655,14 +1654,11 @@ coordination = new CoordinationManager({
   },
   appendChannelMessage: (groupId, text) => {
     const group = store.group(groupId);
-    const run = coordination?.latest(groupId);
-    const coordinator = run ? store.bot(run.roles.architect.botId) : undefined;
     if (!group) return;
     store.appendMessage(group.threadId, {
       role: "bot",
       kind: "text",
       text,
-      ...(coordinator ? { from: { botId: coordinator.id, name: coordinator.name, color: coordinator.color } } : {}),
     });
   },
 });
@@ -1948,7 +1944,7 @@ async function runGroupMemberTurn(
     const members = group.memberIds
       .map((id) => store.bot(id))
       .filter((b): b is NonNullable<typeof b> => Boolean(b) && b!.id !== bot.id);
-    for (const next of roomResponders(replyText, members, { kind: "mentions" })) {
+    for (const next of roomResponders(replyText, members)) {
       if (spoken.has(next.id)) continue;
       if (!(await runGroupMemberTurn(groupId, next.id, hop + 1, spoken))) return false;
     }
@@ -1956,12 +1952,28 @@ async function runGroupMemberTurn(
   return true;
 }
 
-function startGroupTurn(groupId: string, text: string, replyTo?: Message) {
+async function startGroupTurn(groupId: string, text: string, replyTo?: Message) {
   const group = store.group(groupId);
   if (!group) throw Object.assign(new Error("no such group"), { status: 404 });
   if (roomSetupPending(group)) {
     throw Object.assign(new Error("finish room setup before sending the first message"), { status: 409 });
   }
+  if (!group.dm) {
+    try {
+      coordination!.validateStart(group.id, text);
+    } catch (error) {
+      throw Object.assign(error instanceof Error ? error : new Error(String(error)), { status: 409 });
+    }
+    const started = coordination!.start(group.id, text);
+    store.appendMessage(group.threadId, { role: "user", kind: "text", text, replyToId: replyTo?.id });
+    try {
+      await started;
+    } catch (error) {
+      throw Object.assign(error instanceof Error ? error : new Error(String(error)), { status: 409 });
+    }
+    return;
+  }
+
   store.appendMessage(group.threadId, { role: "user", kind: "text", text, replyToId: replyTo?.id });
 
   const members = group.memberIds
@@ -1980,7 +1992,7 @@ function startGroupTurn(groupId: string, text: string, replyTo?: Message) {
       },
     });
   }
-  let responders = roomResponders(text, members, group.defaultResponder);
+  let responders = roomResponders(text, members);
   // bot⇄bot channels: chipping in without a tag addresses the last speaker
   if (!responders.length && group.dm) {
     const lastSpeakerId = [...store.messagesFor(group.threadId)]
@@ -1990,13 +2002,9 @@ function startGroupTurn(groupId: string, text: string, replyTo?: Message) {
     responders = last ? [last] : [];
   }
   if (!responders.length) {
-    const defaultArchivedId = group.defaultResponder.kind === "member" ? group.defaultResponder.botId : undefined;
-    const defaultArchived = archived.find((member) => member.id === defaultArchivedId);
     let unavailableMessage: string | undefined;
     if (!mentionedArchived && !availableMembers.length) {
       unavailableMessage = "No active room members can respond — restore an archived bot or add an active member.";
-    } else if (!mentionedArchived && defaultArchived) {
-      unavailableMessage = `${defaultArchived.name} is archived and can't respond — restore it or mention an active room member.`;
     }
     if (unavailableMessage) {
       store.appendMessage(group.threadId, {
@@ -3338,12 +3346,8 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
         for (const room of pkg?.rooms ?? []) {
           const ids = room.members.map((key) => memberIds.get(key)!);
           let created = store.createGroup(room.name, ids, false, packageSection);
-          const defaultResponder = room.defaultResponder.kind === "agent"
-            ? { kind: "member" as const, botId: memberIds.get(room.defaultResponder.agent)! }
-            : { kind: room.defaultResponder.kind } as const;
           created = store.patchGroup(created.id, {
             bulletin: room.bulletin ?? "",
-            defaultResponder,
             setupCompletedAt: Date.now(),
           }) ?? created;
           createdGroups.push(created);
@@ -3413,6 +3417,9 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
       if (!group) return json(res, 404, { error: "no such room" });
       if (group.dm) return json(res, 400, { error: "direct-message channels do not have room setup" });
       const body = await readBody(req);
+      if (body.defaultResponder !== undefined) {
+        return json(res, 400, { error: "Channel responder routing was removed; Coordinator owns all user-channel messages" });
+      }
       if (body.action !== "complete" && body.action !== "skip") {
         return json(res, 400, { error: "action must be complete or skip" });
       }
@@ -3423,22 +3430,13 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
         return json(res, 409, { error: "room setup must be finished before the first message" });
       }
 
-      const patch: Partial<Pick<GroupRecord, "cwd" | "defaultResponder" | "bulletin" | "setupCompletedAt" | "setupSkippedAt">> = {};
+      const patch: Partial<Pick<GroupRecord, "cwd" | "bulletin" | "setupCompletedAt" | "setupSkippedAt">> = {};
       if (body.action === "complete") {
         const checked = validateBotCwd(body.cwd ?? null);
         if (!checked.ok) return json(res, 400, { error: checked.error });
         if (typeof body.bulletin !== "string") return json(res, 400, { error: "bulletin must be a string" });
         if (body.bulletin.length > 12_000) return json(res, 400, { error: "bulletin must be at most 12000 characters" });
-        const value = body.defaultResponder as { kind?: unknown; botId?: unknown } | null;
-        let responder: GroupDefaultResponder | null = null;
-        if (value?.kind === "everyone") responder = { kind: "everyone" };
-        else if (value?.kind === "mentions") responder = { kind: "mentions" };
-        else if (value?.kind === "member" && typeof value.botId === "string" && group.memberIds.includes(value.botId)) {
-          responder = { kind: "member", botId: value.botId };
-        }
-        if (!responder) return json(res, 400, { error: "invalid default responder" });
         patch.cwd = checked.cwd ?? undefined;
-        patch.defaultResponder = responder;
         patch.bulletin = body.bulletin;
         patch.setupCompletedAt = Date.now();
       } else {
@@ -3453,6 +3451,9 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
       const body = await readBody(req);
       const existing = store.group(m[1]);
       if (!existing) return json(res, 404, { error: "no such room" });
+      if (body.defaultResponder !== undefined) {
+        return json(res, 400, { error: "Channel responder routing was removed; Coordinator owns all user-channel messages" });
+      }
       const patch: Record<string, unknown> = {};
       if (body.name !== undefined) {
         if (typeof body.name !== "string") return json(res, 400, { error: "room name must be a string" });
@@ -3474,18 +3475,6 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
         ];
         if (!ids.length) return json(res, 400, { error: "a room needs at least one bot" });
         patch.memberIds = ids;
-      }
-      if (body.defaultResponder !== undefined) {
-        const value = body.defaultResponder as { kind?: unknown; botId?: unknown } | null;
-        const memberIds = (patch.memberIds as string[] | undefined) ?? existing.memberIds;
-        let responder: GroupDefaultResponder | null = null;
-        if (value?.kind === "everyone") responder = { kind: "everyone" };
-        else if (value?.kind === "mentions") responder = { kind: "mentions" };
-        else if (value?.kind === "member" && typeof value.botId === "string" && memberIds.includes(value.botId)) {
-          responder = { kind: "member", botId: value.botId };
-        }
-        if (!responder) return json(res, 400, { error: "invalid default responder" });
-        patch.defaultResponder = responder;
       }
       if (body.cwd !== undefined) {
         if (existing.dm) return json(res, 400, { error: "direct-message channels cannot have a working folder" });
@@ -3582,7 +3571,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
       const group = store.group(m[1]);
       if (!group) return json(res, 404, { error: "no such group" });
       const replyTo = resolveReplyTarget(group.threadId, body.replyToId);
-      startGroupTurn(group.id, text, replyTo);
+      await startGroupTurn(group.id, text, replyTo);
       return json(res, 202, { ok: true });
     }
     m = path.match(/^\/api\/groups\/([\w-]+)\/interrupt$/);

@@ -41,6 +41,14 @@ const api = async (method: string, path: string, body?: unknown): Promise<{ stat
   return { status: res.status, body: await res.json() };
 };
 
+const settleCoordination = async (groupId: string) => {
+  const latest = await api("GET", `/api/groups/${groupId}/coordination`);
+  if (["planning", "running", "paused", "reviewing"].includes(latest.body.run?.status)) {
+    const cancelled = await api("POST", `/api/groups/${groupId}/coordination/cancel`);
+    expect([200, 409]).toContain(cancelled.status);
+  }
+};
+
 const uploadAvatar = async (mime = "image/png"): Promise<string> => {
   const response = await fetch(`${BASE}/api/attachments`, {
     method: "POST",
@@ -266,7 +274,7 @@ describe("harness HTTP API", () => {
     expect(status).toBe(200);
     expect(body.app).toBe("Roundtable");
     expect(typeof body.pid).toBe("number");
-    expect(body.static).toBe(true);
+    expect(body.transport).toBe("http");
   });
 
   it("serves packaged UI assets and preserves API 404s", async () => {
@@ -399,16 +407,16 @@ describe("harness HTTP API", () => {
     expect(dm.memberIds).toEqual(["test-bot-a", "test-bot-b"]);
   });
 
-  it("hands the lead to a remaining member when the lead leaves the room", async () => {
+  it("changes members without creating a channel lead", async () => {
     const [lead, other] = await Promise.all([api("POST", "/api/bots"), api("POST", "/api/bots")]).then((created) =>
       created.map((response) => response.body.bot),
     );
     const room = (await api("POST", "/api/groups", { name: "Handover", memberIds: [lead.id, other.id] })).body.group;
     try {
-      expect(room.defaultResponder).toEqual({ kind: "member", botId: lead.id });
+      expect(room).not.toHaveProperty("defaultResponder");
       const patched = await api("PATCH", `/api/groups/${room.id}`, { memberIds: [other.id] });
       expect(patched.status).toBe(200);
-      expect(patched.body.group.defaultResponder).toEqual({ kind: "member", botId: other.id });
+      expect(patched.body.group).not.toHaveProperty("defaultResponder");
     } finally {
       await api("DELETE", `/api/groups/${room.id}`);
       for (const bot of [lead, other]) await api("DELETE", `/api/bots/${bot.id}`);
@@ -438,7 +446,6 @@ describe("harness HTTP API", () => {
         action: "complete",
         cwd: null,
         bulletin: "shared brief",
-        defaultResponder: { kind: "member", botId: bot.id },
       });
       expect(completed.status).toBe(200);
       expect(completed.body.group).toMatchObject({ bulletin: "shared brief", setupCompletedAt: expect.any(Number) });
@@ -579,20 +586,21 @@ describe("harness HTTP API", () => {
     const room = (await api("POST", "/api/groups", { name: "Reply room", memberIds: [bot.id] })).body.group;
     try {
       await api("PATCH", `/api/groups/${room.id}/setup`, { action: "skip" });
-      await api("PATCH", `/api/groups/${room.id}`, { defaultResponder: { kind: "mentions" } });
       expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "First thought" })).status).toBe(202);
+      await settleCoordination(room.id);
       let current = (await api("GET", "/api/bots?messages=20")).body.groups.find(
         (candidate: { id: string }) => candidate.id === room.id,
       );
-      const original = current.messages.at(-1);
+      const original = current.messages.find((message: { text?: string }) => message.text === "First thought");
       expect((await api("POST", `/api/groups/${room.id}/messages`, {
         text: "Following up",
         replyToId: original.id,
       })).status).toBe(202);
+      await settleCoordination(room.id);
       current = (await api("GET", "/api/bots?messages=20")).body.groups.find(
         (candidate: { id: string }) => candidate.id === room.id,
       );
-      expect(current.messages.at(-1)).toMatchObject({ text: "Following up", replyToId: original.id });
+      expect(current.messages.find((message: { text?: string }) => message.text === "Following up")).toMatchObject({ text: "Following up", replyToId: original.id });
       expect((await api("POST", `/api/groups/${room.id}/messages`, {
         text: "Wrong conversation",
         replyToId: foreign.messages[0].id,
@@ -680,88 +688,21 @@ describe("harness HTTP API", () => {
     expect(after.body.bots.find((b: { id: string }) => b.id === bot.id)).toBeUndefined();
   });
 
-  it("explains when archived room members cannot respond", async () => {
-    const archived = (await api("POST", "/api/bots")).body.bot;
-    const active = (await api("POST", "/api/bots")).body.bot;
-    const room = (await api("POST", "/api/groups", {
-      name: "Archived member feedback",
-      memberIds: [archived.id, active.id],
-    })).body.group;
-
+  it("rejects a Coordinator goal when the channel has no active bots", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const room = (await api("POST", "/api/groups", { name: "Archived team", memberIds: [bot.id] })).body.group;
     try {
-      expect((await api("PATCH", `/api/groups/${room.id}/setup`, { action: "skip" })).status).toBe(200);
-      const archivedBot = await api("PATCH", `/api/bots/${archived.id}`, {
-        name: "Quill",
-        hidden: true,
-      });
-      expect(archivedBot.status).toBe(200);
-      await api("PATCH", `/api/bots/${active.id}`, {
-        name: "Atlas",
-        modelSelection: { instanceId: "ghost" },
-      });
-      await api("PATCH", `/api/groups/${room.id}`, { defaultResponder: { kind: "mentions" } });
-
-      expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "@Quill take this" })).status).toBe(202);
-      let state = (await api("GET", "/api/bots?messages=20")).body;
-      let messages = state.groups.find((group: { id: string }) => group.id === room.id).messages;
-      expect(messages.at(-1)).toMatchObject({
-        kind: "activity",
-        tool: {
-          name: "Quill is archived and can't respond — restore it or mention an active room member.",
-          ok: false,
-        },
-      });
-
-      const archivedError = "Quill is archived and can't respond — restore it or mention an active room member.";
-      const beforeMixedMention = messages.filter((message: { tool?: { name?: string } }) =>
-        message.tool?.name === archivedError
-      ).length;
-      await api("POST", `/api/groups/${room.id}/messages`, { text: "@Quill and @Atlas take this" });
-      await expect.poll(async () => {
-        state = (await api("GET", "/api/bots?messages=20")).body;
-        messages = state.groups.find((group: { id: string }) => group.id === room.id).messages;
-        return {
-          archivedErrors: messages.filter((message: { tool?: { name?: string } }) =>
-            message.tool?.name === archivedError
-          ).length,
-          activeDispatched: messages.some((message: { tool?: { name?: string } }) =>
-            message.tool?.name === "error: Atlas's model is unavailable"
-          ),
-        };
-      }).toEqual({ archivedErrors: beforeMixedMention + 1, activeDispatched: true });
-
-      await api("PATCH", `/api/groups/${room.id}`, {
-        defaultResponder: { kind: "member", botId: archived.id },
-      });
-      await api("POST", `/api/groups/${room.id}/messages`, { text: "use the default responder" });
-      state = (await api("GET", "/api/bots?messages=20")).body;
-      messages = state.groups.find((group: { id: string }) => group.id === room.id).messages;
-      expect(messages.at(-1)?.tool).toEqual({ name: archivedError, ok: false });
-
-      await api("PATCH", `/api/groups/${room.id}`, { defaultResponder: { kind: "mentions" } });
-
-      const beforeUnmentioned = messages.length;
-      await api("POST", `/api/groups/${room.id}/messages`, { text: "no mention" });
-      state = (await api("GET", "/api/bots?messages=20")).body;
-      messages = state.groups.find((group: { id: string }) => group.id === room.id).messages;
-      expect(messages).toHaveLength(beforeUnmentioned + 1);
-      expect(messages.at(-1)).toMatchObject({ kind: "text", role: "user", text: "no mention" });
-
-      await api("PATCH", `/api/bots/${active.id}`, { hidden: true });
-      await api("POST", `/api/groups/${room.id}/messages`, { text: "hello everyone" });
-      state = (await api("GET", "/api/bots?messages=20")).body;
-      messages = state.groups.find((group: { id: string }) => group.id === room.id).messages;
-      expect(messages.at(-1)).toMatchObject({
-        kind: "activity",
-        tool: {
-          name: "No active room members can respond — restore an archived bot or add an active member.",
-          ok: false,
-        },
-      });
+      await api("PATCH", `/api/groups/${room.id}/setup`, { action: "skip" });
+      await api("PATCH", `/api/bots/${bot.id}`, { hidden: true });
+      const sent = await api("POST", `/api/groups/${room.id}/messages`, { text: "Start the work" });
+      expect(sent.status).toBe(409);
+      const group = (await api("GET", "/api/bots?messages=20")).body.groups.find(
+        (candidate: { id: string }) => candidate.id === room.id,
+      );
+      expect(group.messages).toEqual([]);
     } finally {
       await api("DELETE", `/api/groups/${room.id}`);
-      await api("DELETE", `/api/bots/${archived.id}`);
-      await api("DELETE", `/api/bots/${active.id}`);
+      await api("DELETE", `/api/bots/${bot.id}`);
     }
   });
 
@@ -1107,7 +1048,6 @@ describe("harness HTTP API", () => {
           name: "Signal Room",
           members: ["scout", "editor"],
           bulletin: "Separate direct evidence from inference.",
-          defaultResponder: { kind: "agent", agent: "scout" },
         }],
         routines: [{
           key: "morning-signals",
@@ -1152,7 +1092,6 @@ describe("harness HTTP API", () => {
     expect(installed.body.groups[0]).toMatchObject({
       name: "Signal Room",
       memberIds: expect.arrayContaining([scout.id, editor.id]),
-      defaultResponder: { kind: "member", botId: scout.id },
       bulletin: "Separate direct evidence from inference.",
       setupCompletedAt: expect.any(Number),
     });
@@ -1306,7 +1245,6 @@ describe("harness HTTP API", () => {
       name: "War Room",
       bulletin: "",
       memberIds: [trusted.id],
-      defaultResponder: { kind: "member", botId: trusted.id },
     });
 
     // re-import after the user edited their copy: the edit survives, the
@@ -1617,7 +1555,7 @@ describe("harness HTTP API", () => {
 
       const before = (await api("GET", "/api/bots")).body;
       expect(before.bots.find((bot: { id: string }) => bot.id === botId)?.busy).toBe(true);
-      expect(before.groups.find((group: { id: string }) => group.id === room.id)?.busyBotId).toBe(botId);
+      expect(before.groups.find((group: { id: string }) => group.id === room.id)?.busyBotId).toBeNull();
 
       const saved = await api("PUT", "/api/config", { rooms: { turnTimeoutMinutes: 20 } });
       expect(saved.status).toBe(200);
@@ -1625,12 +1563,12 @@ describe("harness HTTP API", () => {
       const after = (await api("GET", "/api/bots")).body;
       expect(after.bots.find((bot: { id: string }) => bot.id === botId)?.busy).toBe(true);
       const activeRoom = after.groups.find((group: { id: string }) => group.id === room.id);
-      expect(activeRoom?.busyBotId).toBe(botId);
+      expect(activeRoom?.busyBotId).toBeNull();
       expect(activeRoom.messages.some((message: { tool?: { name?: string } }) =>
         message.tool?.name?.includes("provider settings changed"),
       )).toBe(false);
     } finally {
-      await api("POST", `/api/groups/${room.id}/interrupt`);
+      await api("POST", `/api/groups/${room.id}/coordination/cancel`);
       await expect.poll(async () => {
         const state = (await api("GET", "/api/bots")).body;
         return {
@@ -2004,10 +1942,9 @@ describe("message pages", () => {
     const created = await api("POST", "/api/groups", { name: "Paging", memberIds: [body.bots[0].id] });
     expect(created.status).toBe(201);
     const groupId = created.body.group.id;
-    // finish room setup with a mentions-only responder so no bot answers the probes
+    // finish room setup; every probe becomes a Coordinator run
     const quiet = await api("PATCH", `/api/groups/${groupId}/setup`, {
       action: "complete",
-      defaultResponder: { kind: "mentions" },
       bulletin: "",
     });
     expect(quiet.status).toBe(200);
@@ -2015,6 +1952,7 @@ describe("message pages", () => {
     for (let i = 0; i < count; i++) {
       const posted = await api("POST", `/api/groups/${groupId}/messages`, { text: `page probe ${i}` });
       expect(posted.status).toBe(202);
+      await settleCoordination(groupId);
     }
     const after = await api("GET", "/api/bots");
     return after.body.groups.find((g: { id: string }) => g.id === groupId);
@@ -2022,7 +1960,7 @@ describe("message pages", () => {
 
   it("returns the whole transcript when nothing is asked for", async () => {
     const room = await seedRoom(6);
-    expect(room.messages).toHaveLength(6);
+    expect(room.messages).toHaveLength(12);
     // the original shape carries no pagination fields at all
     expect(room).not.toHaveProperty("hasMore");
   });
@@ -2056,7 +1994,7 @@ describe("message pages", () => {
     // walking back far enough reaches the top and says so
     const top = await api("GET", `/api/threads/${full.threadId}/messages?limit=200`);
     expect(top.body.hasMore).toBe(false);
-    expect(top.body.messages).toHaveLength(6);
+    expect(top.body.messages).toHaveLength(12);
   });
 
   it("returns a bounded transcript window around a search result", async () => {

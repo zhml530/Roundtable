@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 
-import { mentionedBots, normalizeGroupDefaultResponder, roomResponders } from "./store.ts";
+import { mentionedBots, roomResponders } from "./store.ts";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
@@ -58,24 +58,16 @@ describe("roomResponders", () => {
     { id: "milind", name: "Milind" },
   ];
 
-  it("routes an unmentioned message to the configured lead", () => {
-    expect(roomResponders("hello there", members, { kind: "member", botId: "atlas" })).toEqual([members[0]]);
+  it("does not give an unmentioned internal message an implicit lead", () => {
+    expect(roomResponders("hello there", members)).toEqual([]);
   });
 
-  it("lets explicit mentions override the configured lead", () => {
-    expect(roomResponders("@Milind take this", members, { kind: "member", botId: "atlas" })).toEqual([members[1]]);
+  it("routes explicit mentions", () => {
+    expect(roomResponders("@Milind take this", members)).toEqual([members[1]]);
   });
 
-  it("supports everyone and mentions-only room policies", () => {
-    expect(roomResponders("hello", members, { kind: "everyone" })).toEqual(members);
-    expect(roomResponders("hello", members, { kind: "mentions" })).toEqual([]);
-    expect(roomResponders("@everyone hello", members, { kind: "mentions" })).toEqual(members);
-  });
-
-  it("keeps bot-to-bot channels on their last-speaker routing", () => {
-    expect(normalizeGroupDefaultResponder({ kind: "everyone" }, members.map((member) => member.id), true)).toEqual({
-      kind: "mentions",
-    });
+  it("supports explicit @everyone routing", () => {
+    expect(roomResponders("@everyone hello", members)).toEqual(members);
   });
 });
 

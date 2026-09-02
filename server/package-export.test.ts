@@ -39,7 +39,6 @@ describe("package export", () => {
         threadId: "private-room-thread",
         name: "Launch Room",
         memberIds: ["private-id"],
-        defaultResponder: { kind: "member", botId: "private-id" },
         bulletin: "Ship carefully.",
         unread: false,
         createdAt: 1,
@@ -63,7 +62,7 @@ describe("package export", () => {
       format: "openmaus.package",
       package: {
         requirements: { apps: [{ slug: "github" }] },
-        rooms: [{ members: ["lead"], defaultResponder: { kind: "agent", agent: "lead" } }],
+        rooms: [{ members: ["lead"] }],
         routines: [{ agent: "lead", enabledAfterInstall: false }],
         playbooks: [{ key: "launch" }],
       },

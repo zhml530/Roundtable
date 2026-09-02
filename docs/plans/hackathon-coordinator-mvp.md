@@ -1,9 +1,13 @@
 # Hackathon Coordinator MVP
 
-Status: MVP implemented and build-verified  
+Status: Superseded by [`../../cordinator.md`](../../cordinator.md)
 Owner: Roundtable  
 Reference runtime: Open Multi-Agent 1.17.0  
-Last updated: 2026-09-01
+Last updated: 2026-09-02
+
+> Historical note: the separate Coordinator composer and four-required-Bot
+> assumptions below describe the first MVP. The current product sends the one
+> Channel composer to the system Coordinator and scales the DAG to the goal.
 
 ## Outcome
 

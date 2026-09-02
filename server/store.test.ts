@@ -102,18 +102,18 @@ describe("Store", () => {
     expect(first.color).not.toBe(second.color);
   });
 
-  it("defaults a room to its first member and repairs the lead when membership changes", () => {
+  it("keeps channel membership without creating a lead", () => {
     const store = new Store(selection);
     const first = store.createBot();
     const second = store.createBot();
     const group = store.createGroup("Team", [first.id, second.id]);
 
-    expect(group.defaultResponder).toEqual({ kind: "member", botId: first.id });
+    expect(group).not.toHaveProperty("defaultResponder");
     store.patchGroup(group.id, { memberIds: [second.id] });
-    expect(group.defaultResponder).toEqual({ kind: "member", botId: second.id });
+    expect(group.memberIds).toEqual([second.id]);
 
     const reloaded = new Store(selection);
-    expect(reloaded.group(group.id)?.defaultResponder).toEqual({ kind: "member", botId: second.id });
+    expect(reloaded.group(group.id)).not.toHaveProperty("defaultResponder");
   });
 
   it("persists a channel's context when it is created", () => {
@@ -125,18 +125,18 @@ describe("Store", () => {
     expect(new Store(selection).group(channel.id)?.section).toBe("Work");
   });
 
-  it("migrates old rooms without routing to their first member", () => {
+  it("drops legacy default responder fields on load", () => {
     const store = new Store(selection);
     const first = store.createBot();
     const second = store.createBot();
     const group = store.createGroup("Legacy team", [first.id, second.id]);
     const groupsFile = join(DATA_DIR, "groups.json");
     const saved = JSON.parse(readFileSync(groupsFile, "utf8"));
-    delete saved[0].defaultResponder;
+    saved[0].defaultResponder = { kind: "member", botId: first.id };
     writeFileSync(groupsFile, JSON.stringify(saved));
 
     const reloaded = new Store(selection);
-    expect(reloaded.group(group.id)?.defaultResponder).toEqual({ kind: "member", botId: first.id });
+    expect(reloaded.group(group.id)).not.toHaveProperty("defaultResponder");
   });
 
   it("persists bots and messages across a restart, resetting busy", () => {

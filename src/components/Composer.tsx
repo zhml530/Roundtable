@@ -16,7 +16,6 @@ import {
   type Attachment,
 } from "@/lib/composer-attachments";
 import { normalizeState } from "@/lib/mascot";
-import { groupComposerHint, roomRespondersForComposer } from "@/lib/group-routing";
 import { PendingApprovalActions, PendingApprovalPanel, pendingApprovals } from "./PendingApproval";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { ReplyQuote } from "./ReplyQuote";
@@ -137,7 +136,7 @@ export function Composer({
   onEditLast,
   replyTo,
   onClearReply,
-  locked = false,
+  locked: setupLocked = false,
 }: {
   bot?: Bot;
   group?: Group;
@@ -151,8 +150,9 @@ export function Composer({
   const { state, dispatch } = useStore();
   const { capabilities } = useDesktopCapabilities();
   // Unified target: a 1:1 bot thread or a room. In a room the @ picker
-  // offers members plus @everyone; explicit mentions override the room's
-  // configured default responder.
+  // offers members plus @everyone; mentions constrain Coordinator assignment.
+  const runActive = Boolean(group?.coordination && ["planning", "running", "paused", "reviewing"].includes(group.coordination.status));
+  const locked = setupLocked || runActive;
   const busy = group ? Boolean(group.busyBotId) : Boolean(bot?.busy);
   // an engine with a live session takes a message INTO the running turn;
   // for those the composer never locks — the server steers instead of 409
@@ -193,18 +193,17 @@ export function Composer({
   // what was typed before the mic went on — partials append after it
   const baseText = useRef("");
 
-  // image paste is offered only when every bot that will actually answer
-  // can open one. sendGroup routes to mentions, else the room default —
-  // `members.some` would let a mixed room send <attached-image> to Grok.
+  // The Planner and final worker are selected after send, so image intake is
+  // safe only when every currently eligible channel member can open one.
   const botSupportsImages = (candidate?: Bot) =>
     Boolean(
       candidate &&
         state.instances.find((i) => i.instanceId === candidate.modelSelection.instanceId)?.capabilities?.images,
     );
-  const imageTargetsSupport = (message: string) => {
+  const imageTargetsSupport = (_message: string) => {
     if (!group) return botSupportsImages(bot);
-    const responders = roomRespondersForComposer(message, members ?? [], group);
-    return responders.length > 0 && responders.every(botSupportsImages);
+    const eligible = (members ?? []).filter((member) => !member.hidden);
+    return eligible.length > 0 && eligible.every(botSupportsImages);
   };
   const engineSupportsImages = imageTargetsSupport(text);
 
@@ -582,7 +581,9 @@ export function Composer({
                   ? `${busyName} is working — Enter queues your message`
                   : `${busyName} is working — sends when this turn finishes`
                 : group
-                  ? `Message ${group.name} — ${groupComposerHint(group, members ?? [])}`
+                  ? runActive
+                    ? "A Coordinator run is active — use Mission Control or wait for completion"
+                    : `Give ${group.name} a goal — Coordinator assigns the work`
                   : `Message ${bot?.name ?? ""}`
           }
           aria-label={`Message ${group ? group.name : (bot?.name ?? "")}`}

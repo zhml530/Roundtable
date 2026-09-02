@@ -1,9 +1,9 @@
 // A room: several bots + you in one shared thread. The sidebar and call view
 // carry the personality; avatars inside the room stay still so a busy group
-// does not become a wall of competing motion. Plain messages go to the room's
-// default responder; @mentions override that routing.
+// does not become a wall of competing motion. User-created channels send every
+// message to the system Coordinator; DM rooms keep peer routing.
 import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, Check, ChevronDown, Folder, FolderOpen, Loader2, MessageSquareReply, Pin, PinOff, Plus, Search, X } from "lucide-react";
+import { ArrowDown, Folder, FolderOpen, Loader2, MessageSquareReply, Pin, PinOff, Plus, Search, X } from "lucide-react";
 import {
   api,
   useStore,
@@ -11,12 +11,10 @@ import {
   formatTime,
   type Bot,
   type Group,
-  type GroupDefaultResponder,
   type Message,
 } from "@/state/store";
 import { BotAvatar, MausAvatar } from "./Avatar";
 import { normalizeState } from "@/lib/mascot";
-import { effectiveDefaultResponder, groupResponseHint } from "@/lib/group-routing";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { Composer } from "./Composer";
 import { ChatFindBar } from "./ChatFindBar";
@@ -239,55 +237,6 @@ function StreamingBubble({ text }: { text: string }) {
   );
 }
 
-function DefaultResponderSelect({ group, members }: { group: Group; members: Bot[] }) {
-  const { dispatch } = useStore();
-  const responder = effectiveDefaultResponder(group, members);
-  const value = responder.kind === "member" ? `member:${responder.botId}` : responder.kind;
-  const lead = responder.kind === "member" ? members.find((member) => member.id === responder.botId) : undefined;
-  const title =
-    responder.kind === "everyone"
-      ? "Plain messages go to every channel member; @mentions override this"
-      : responder.kind === "mentions"
-        ? "Only explicitly @mentioned bots respond"
-        : `Plain messages go to ${lead?.name ?? "the lead bot"}; @mentions override this`;
-
-  const change = (nextValue: string) => {
-    let next: GroupDefaultResponder;
-    if (nextValue === "everyone") next = { kind: "everyone" };
-    else if (nextValue === "mentions") next = { kind: "mentions" };
-    else next = { kind: "member", botId: nextValue.slice("member:".length) };
-    dispatch({ type: "patchGroup", groupId: group.id, patch: { defaultResponder: next } });
-  };
-
-  return (
-    <div className="relative shrink-0" title={title}>
-      <select
-        aria-label="Default responder"
-        value={value}
-        onChange={(event) => change(event.target.value)}
-        className="h-8 max-w-[190px] appearance-none truncate rounded-full border border-hairline/40 bg-raised/60 py-1 pl-3 pr-7 text-[12.5px] font-medium text-ink outline-none hover:bg-raised focus:border-accent"
-      >
-        <optgroup label="Channel lead">
-          {members.map((member) => (
-            <option key={member.id} value={`member:${member.id}`}>
-              Lead: {member.name}
-            </option>
-          ))}
-        </optgroup>
-        <optgroup label="Channel behavior">
-          <option value="everyone">Everyone responds</option>
-          <option value="mentions">Only when mentioned</option>
-        </optgroup>
-      </select>
-      <ChevronDown
-        size={13}
-        aria-hidden="true"
-        className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-ink-secondary"
-      />
-    </div>
-  );
-}
-
 /** The room's shared desk: where every member's shell and file tools run,
  * overriding each bot's own folder for room turns. The room pins its own
  * copy on its first turn (the server does the pinning — engines key their
@@ -413,12 +362,6 @@ type RoomSetupFields = {
   setupSkippedAt?: number | string | null;
 };
 
-type RoomResponderMode = "lead" | "everyone" | "mentions";
-
-function setupResponderMode(responder: GroupDefaultResponder): RoomResponderMode {
-  return responder.kind === "member" ? "lead" : responder.kind;
-}
-
 function roomNeedsSetup(group: Group): boolean {
   if (group.dm || group.messages.length > 0) return false;
   // SAFETY: setup fields are additive server metadata; the existing Group shape remains valid when absent.
@@ -441,46 +384,14 @@ function roomNeedsSetup(group: Group): boolean {
   return true;
 }
 
-function RoomSetup({ group, members }: { group: Group; members: Bot[] }) {
+function RoomSetup({ group }: { group: Group }) {
   const { dispatch } = useStore();
   const [folder, setFolder] = useState(group.cwd ?? "");
-  const [behavior, setBehavior] = useState<RoomResponderMode>(setupResponderMode(group.defaultResponder));
-  const [leadId, setLeadId] = useState(
-    group.defaultResponder.kind === "member" ? group.defaultResponder.botId : members[0]?.id ?? "",
-  );
   const [instructions, setInstructions] = useState(group.bulletin);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [leadPickerOpen, setLeadPickerOpen] = useState(false);
-  const leadPickerRef = useRef<HTMLDivElement>(null);
-  const selectedLead = members.find((member) => member.id === leadId) ?? members[0];
-
-  useEffect(() => {
-    if (!leadPickerOpen) return;
-    const closeOnOutsideClick = (event: PointerEvent) => {
-      if (!leadPickerRef.current?.contains(event.target as Node)) setLeadPickerOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setLeadPickerOpen(false);
-    };
-    document.addEventListener("pointerdown", closeOnOutsideClick);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOnOutsideClick);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [leadPickerOpen]);
-
-  const responder = (): GroupDefaultResponder => {
-    if (behavior === "everyone") return { kind: "everyone" };
-    if (behavior === "mentions") return { kind: "mentions" };
-    return members.some((member) => member.id === leadId)
-      ? { kind: "member", botId: leadId }
-      : group.defaultResponder;
-  };
 
   const finish = async (action: "complete" | "skip") => {
-    setLeadPickerOpen(false);
     setSaving(true);
     setError(null);
     try {
@@ -490,7 +401,6 @@ function RoomSetup({ group, members }: { group: Group; members: Bot[] }) {
           : {
               action,
               cwd: folder.trim() || null,
-              defaultResponder: responder(),
               bulletin: instructions,
             };
       const result = await api(`/api/groups/${group.id}/setup`, {
@@ -529,7 +439,7 @@ function RoomSetup({ group, members }: { group: Group; members: Bot[] }) {
           <div>
             <h1 id="room-setup-title" className="text-xl font-semibold tracking-tight text-ink">Set up {group.name}</h1>
             <p className="mt-1 max-w-[560px] text-[13.5px] leading-relaxed text-ink-secondary">
-              Give this room a shared workspace, response style, and a little context before the first conversation starts.
+              Give this channel a shared workspace and context. Coordinator will turn every message into a run.
             </p>
           </div>
         </div>
@@ -563,160 +473,6 @@ function RoomSetup({ group, members }: { group: Group; members: Bot[] }) {
             )}
           </div>
         </label>
-
-        <fieldset className="block">
-          <legend className="text-[13px] font-semibold text-ink">Default responder</legend>
-          <p className="mt-1 text-[12px] text-ink-secondary">Choose who answers when nobody is mentioned.</p>
-          <div role="radiogroup" aria-label="Default responder" className="mt-2 grid gap-2 sm:grid-cols-3">
-            <div ref={leadPickerRef} className="relative min-w-0">
-              <button
-                type="button"
-                role="radio"
-                aria-checked={behavior === "lead"}
-                aria-haspopup="listbox"
-                aria-expanded={behavior === "lead" && leadPickerOpen}
-                onClick={() => {
-                  setBehavior("lead");
-                  setLeadPickerOpen((open) => !open);
-                }}
-                disabled={saving}
-                className={cn(
-                  "flex min-h-[72px] w-full flex-col items-start justify-between rounded-2xl border px-3 py-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50",
-                  behavior === "lead"
-                    ? "border-accent bg-accent/10 text-ink ring-1 ring-accent/30"
-                    : "border-hairline/50 bg-inset text-ink-secondary hover:border-hairline hover:bg-raised",
-                )}
-              >
-                <span className="flex w-full items-center justify-between gap-2">
-                  <span className="flex items-center gap-2 text-[13px] font-semibold">
-                    <span
-                      className={cn(
-                        "flex size-4 shrink-0 items-center justify-center rounded-full border",
-                        behavior === "lead" ? "border-accent bg-accent" : "border-ink-secondary/60",
-                      )}
-                    >
-                      {behavior === "lead" && <span className="size-1.5 rounded-full bg-white" />}
-                    </span>
-                    Specific lead
-                  </span>
-                  <ChevronDown
-                    size={14}
-                    aria-hidden="true"
-                    className={cn("shrink-0 text-ink-secondary transition-transform", leadPickerOpen && "rotate-180")}
-                  />
-                </span>
-                <span className="ml-6 mt-2 truncate text-[11.5px] text-ink-secondary">
-                  {selectedLead?.name ?? "Choose a teammate"}
-                </span>
-              </button>
-              {behavior === "lead" && leadPickerOpen && (
-                <div
-                  role="listbox"
-                  aria-label="Choose a lead"
-                  className="absolute left-0 top-full z-30 mt-2 w-72 max-w-[calc(100vw-3rem)] overflow-hidden rounded-2xl border border-hairline/60 bg-panel shadow-2xl shadow-black/20"
-                >
-                  <div className="border-b border-hairline/40 px-3 py-2.5">
-                    <div className="text-[12.5px] font-semibold text-ink">Choose a lead</div>
-                    <div className="mt-0.5 text-[11.5px] text-ink-secondary">Plain messages go to this teammate.</div>
-                  </div>
-                  <div className="max-h-48 overflow-y-auto p-1.5">
-                    {members.map((member) => {
-                      const selected = member.id === leadId;
-                      return (
-                        <button
-                          key={member.id}
-                          type="button"
-                          role="option"
-                          aria-selected={selected}
-                          onClick={() => {
-                            setLeadId(member.id);
-                            setLeadPickerOpen(false);
-                          }}
-                          className={cn(
-                            "flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left transition",
-                            selected ? "bg-accent/10" : "hover:bg-raised",
-                          )}
-                        >
-                          <BotAvatar
-                            bot={member}
-                            state={normalizeState(member.mascotExpression) ?? "happy"}
-                            size={24}
-                            animated={false}
-                          />
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-[13px] font-medium text-ink">{member.name}</span>
-                            <span className="block truncate text-[11px] text-ink-secondary">{member.title}</span>
-                          </span>
-                          {selected && <Check size={15} className="shrink-0 text-accent" />}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <button
-              type="button"
-              role="radio"
-              aria-checked={behavior === "everyone"}
-              onClick={() => {
-                setBehavior("everyone");
-                setLeadPickerOpen(false);
-              }}
-              disabled={saving}
-              className={cn(
-                "flex min-h-[72px] w-full flex-col items-start justify-between rounded-2xl border px-3 py-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50",
-                behavior === "everyone"
-                  ? "border-accent bg-accent/10 text-ink ring-1 ring-accent/30"
-                  : "border-hairline/50 bg-inset text-ink-secondary hover:border-hairline hover:bg-raised",
-              )}
-            >
-              <span className="flex items-center gap-2 text-[13px] font-semibold">
-                <span
-                  className={cn(
-                    "flex size-4 shrink-0 items-center justify-center rounded-full border",
-                    behavior === "everyone" ? "border-accent bg-accent" : "border-ink-secondary/60",
-                  )}
-                >
-                  {behavior === "everyone" && <span className="size-1.5 rounded-full bg-white" />}
-                </span>
-                Everyone responds
-              </span>
-              <span className="ml-6 mt-2 text-[11.5px] text-ink-secondary">All room members</span>
-            </button>
-
-            <button
-              type="button"
-              role="radio"
-              aria-checked={behavior === "mentions"}
-              onClick={() => {
-                setBehavior("mentions");
-                setLeadPickerOpen(false);
-              }}
-              disabled={saving}
-              className={cn(
-                "flex min-h-[72px] w-full flex-col items-start justify-between rounded-2xl border px-3 py-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50",
-                behavior === "mentions"
-                  ? "border-accent bg-accent/10 text-ink ring-1 ring-accent/30"
-                  : "border-hairline/50 bg-inset text-ink-secondary hover:border-hairline hover:bg-raised",
-              )}
-            >
-              <span className="flex items-center gap-2 text-[13px] font-semibold">
-                <span
-                  className={cn(
-                    "flex size-4 shrink-0 items-center justify-center rounded-full border",
-                    behavior === "mentions" ? "border-accent bg-accent" : "border-ink-secondary/60",
-                  )}
-                >
-                  {behavior === "mentions" && <span className="size-1.5 rounded-full bg-white" />}
-                </span>
-                Only when mentioned
-              </span>
-              <span className="ml-6 mt-2 text-[11.5px] text-ink-secondary">Only @mentioned members</span>
-            </button>
-          </div>
-        </fieldset>
 
         <label className="block">
           <span className="text-[13px] font-semibold text-ink">Room instructions</span>
@@ -943,7 +699,6 @@ export function GroupView({ group }: { group: Group }) {
             <Search size={18} />
           </button>
           {!setupPending && !group.dm && <RoomWorkingFolderChip group={group} onToggle={() => setFolderOpen((open) => !open)} />}
-          {!setupPending && !group.dm && <DefaultResponderSelect group={group} members={members} />}
           {group.dm ? (
             memberMauses
           ) : (
@@ -1075,7 +830,7 @@ export function GroupView({ group }: { group: Group }) {
       >
         {setupPending ? (
           <div className="mx-auto flex min-h-full max-w-[900px] items-center py-8">
-            <RoomSetup group={group} members={members} />
+            <RoomSetup group={group} />
           </div>
         ) : (
         <div
@@ -1101,7 +856,7 @@ export function GroupView({ group }: { group: Group }) {
               </div>
               <div className="text-[17px] font-semibold text-ink">{group.name}</div>
               <div className="max-w-[380px] text-[14px] text-ink-secondary">
-                {groupResponseHint(group, members)}
+                Give Coordinator a goal. Mention a Bot to constrain assignment, or use @everyone to include the whole channel.
               </div>
             </div>
           )}

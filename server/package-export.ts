@@ -73,17 +73,11 @@ export function createBotPackageExport(input: {
   for (const [index, group] of input.groups.filter((group) => !group.dm).entries()) {
     const members = group.memberIds.flatMap((id) => idToKey.has(id) ? [idToKey.get(id)!] : []);
     if (!members.length) continue;
-    const defaultResponder = group.defaultResponder.kind === "member" && idToKey.has(group.defaultResponder.botId)
-      ? { kind: "agent" as const, agent: idToKey.get(group.defaultResponder.botId)! }
-      : group.defaultResponder.kind === "everyone"
-        ? { kind: "everyone" as const }
-        : { kind: "mentions" as const };
     rooms.push({
       key: portableKey(group.name, `room-${index + 1}`, roomKeys),
       name: group.name,
       members,
       bulletin: group.bulletin,
-      defaultResponder,
     });
   }
 

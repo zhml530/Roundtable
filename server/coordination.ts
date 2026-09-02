@@ -20,7 +20,7 @@ import { writeFileAtomic } from "./atomic.ts";
 import { DATA_DIR } from "./config.ts";
 
 export type CoordinationRole = "architect" | "developer" | "tester" | "reviewer";
-export type CoordinationRunStatus = "planning" | "running" | "paused" | "completed" | "failed" | "cancelled";
+export type CoordinationRunStatus = "planning" | "running" | "paused" | "reviewing" | "completed" | "failed" | "cancelled";
 export type CoordinationTaskStatus = "pending" | "ready" | "running" | "completed" | "failed" | "blocked" | "cancelled";
 
 export interface CoordinationBot {
@@ -63,6 +63,11 @@ export interface CoordinationRun {
   goal: string;
   status: CoordinationRunStatus;
   roles: Record<CoordinationRole, { botId: string; botName: string }>;
+  plannerBotId: string;
+  plannerBotName: string;
+  plannerSelectionReason: string;
+  requestedBotIds: string[];
+  policySnapshot: { maxConcurrency: number; maxFixCycles: number; requirePlanApproval: boolean };
   tasks: CoordinationTask[];
   events: CoordinationEvent[];
   createdAt: number;
@@ -121,14 +126,36 @@ interface CoordinationAssignments {
   reviewer: CoordinationBot;
 }
 
+interface CoordinationPlanBinding {
+  plan: PlanArtifact;
+  bindings: Map<string, CoordinationBot>;
+}
+
 function roleScore(bot: CoordinationBot, role: CoordinationRole): number {
   const text = `${bot.name} ${bot.title} ${bot.description}`.toLowerCase();
   return ROLE_WORDS[role].reduce((score, word) => score + (text.includes(word) ? (bot.title.toLowerCase().includes(word) ? 5 : 2) : 0), 0);
 }
 
+function requestedBots(goal: string, bots: CoordinationBot[]): CoordinationBot[] {
+  if (/(?:^|\s)@everyone\b/i.test(goal)) return [...bots];
+  const lower = goal.toLowerCase();
+  return bots
+    .filter((bot) => {
+      const needle = `@${bot.name.toLowerCase()}`;
+      const at = lower.indexOf(needle);
+      if (at < 0 || (at > 0 && !/\s/.test(goal[at - 1]!))) return false;
+      const after = lower[at + needle.length];
+      return after === undefined || !/[a-z0-9]/i.test(after);
+    });
+}
+
+function bestRole(bot: CoordinationBot): CoordinationRole {
+  return [...ROLES].sort((a, b) => roleScore(bot, b) - roleScore(bot, a))[0]!;
+}
+
 /** Deterministic, distinct role assignment; explicit profile wording wins, channel order breaks ties. */
 export function assignCoordinationRoles(bots: CoordinationBot[]): CoordinationAssignments {
-  if (bots.length < ROLES.length) throw new Error("Coordinator needs at least four bots in the channel");
+  if (bots.length === 0) throw new Error("Coordinator needs at least one active bot in the channel");
   const remaining = [...bots];
   // SAFETY: the loop below writes every member of the closed ROLES tuple exactly once.
   const assigned = {} as CoordinationAssignments;
@@ -142,7 +169,9 @@ export function assignCoordinationRoles(bots: CoordinationBot[]): CoordinationAs
         bestScore = score;
       }
     });
-    assigned[role] = remaining.splice(bestIndex, 1)[0]!;
+    assigned[role] = remaining.length
+      ? remaining.splice(bestIndex, 1)[0]!
+      : [...bots].sort((a, b) => roleScore(b, role) - roleScore(a, role))[0]!;
   }
   return assigned;
 }
@@ -169,10 +198,12 @@ export function normalizeCoordinationPlan(plan: PlanArtifact, goal: string): Pla
   });
   if (tasks.length === 0) return fallbackPlan(goal);
 
-  // A review is always the terminal gate, even when the generated plan omitted one.
+  // Multi-step and risk-sensitive work gets a terminal Reviewer gate. A truly
+  // simple goal may remain one task, which is the key Coordinator v2 cost rule.
   const terminalIds = tasks.filter((candidate) => !tasks.some((other) => other.dependsOn?.includes(candidate.id))).map((task) => task.id);
   const reviewerIsTerminal = tasks.some((task) => task.role === "reviewer" && terminalIds.includes(task.id));
-  if (!reviewerIsTerminal) {
+  const highRisk = /\b(security|auth|payment|billing|production|deploy|delete|migration|permission|credential)\b|安全|生产|部署|删除|迁移|权限|凭据/i.test(goal);
+  if (!reviewerIsTerminal && (tasks.length > 1 || highRisk)) {
     tasks.push({
       id: `review-${randomUUID()}`,
       title: "Final implementation review",
@@ -187,6 +218,14 @@ export function normalizeCoordinationPlan(plan: PlanArtifact, goal: string): Pla
 }
 
 export function fallbackPlan(goal: string): PlanArtifact {
+  const complex = /\b(implement|build|fix|refactor|migrate|ship|test|review|design|architecture|feature)\b|实现|构建|修复|重构|迁移|发布|测试|评审|设计|架构|功能/i.test(goal);
+  if (!complex) {
+    return {
+      version: 1,
+      goal,
+      tasks: [{ id: "execute", title: "Complete the goal", description: goal, role: "developer", assignee: "developer" }],
+    };
+  }
   return {
     version: 1,
     goal,
@@ -262,14 +301,33 @@ export class CoordinationManager {
     return this.runs.filter((run) => run.groupId === groupId).sort((a, b) => b.createdAt - a.createdAt)[0];
   }
 
+  validateStart(groupId: string, rawGoal: string): void {
+    if (!rawGoal.trim()) throw new Error("Tell the coordinator what outcome you want");
+    const existing = this.latest(groupId);
+    if (existing && ["planning", "running", "paused", "reviewing"].includes(existing.status)) {
+      throw new Error("This channel already has an active coordination run");
+    }
+    if (this.options.groupBots(groupId).length === 0) {
+      throw new Error("Coordinator needs at least one active bot in the channel");
+    }
+  }
+
   async start(groupId: string, rawGoal: string): Promise<CoordinationRun> {
     const goal = rawGoal.trim().slice(0, 20_000);
-    if (!goal) throw new Error("Tell the coordinator what outcome you want");
-    const existing = this.latest(groupId);
-    if (existing && ["planning", "running", "paused"].includes(existing.status)) throw new Error("This channel already has an active coordination run");
-    const assigned = assignCoordinationRoles(this.options.groupBots(groupId));
+    this.validateStart(groupId, goal);
+    const bots = this.options.groupBots(groupId);
+    const assigned = assignCoordinationRoles(bots);
+    const planner = assigned.architect;
+    const requested = requestedBots(goal, bots);
     const run: CoordinationRun = {
       id: randomUUID(), groupId, goal, status: "planning", tasks: [], events: [], createdAt: this.now(), fixCycles: 0,
+      plannerBotId: planner.id,
+      plannerBotName: planner.name,
+      plannerSelectionReason: roleScore(planner, "architect") > 0
+        ? "Best profile match for planning and architecture"
+        : "Best available channel member for this run",
+      requestedBotIds: requested.map((bot) => bot.id),
+      policySnapshot: { maxConcurrency: Math.min(4, Math.max(1, bots.length)), maxFixCycles: 2, requirePlanApproval: false },
       roles: {
         architect: { botId: assigned.architect.id, botName: assigned.architect.name },
         developer: { botId: assigned.developer.id, botName: assigned.developer.name },
@@ -278,6 +336,8 @@ export class CoordinationManager {
       },
     };
     this.runs.push(run);
+    this.event(run, "run", `${planner.name} selected as this run's Planner`);
+    if (requested.length) this.event(run, "run", `Scheduling constraint: include ${requested.map((bot) => bot.name).join(", ")}`);
     this.event(run, "run", "Coordinator is turning the goal into an execution DAG");
     this.publish(run);
     void this.execute(run, assigned);
@@ -286,7 +346,7 @@ export class CoordinationManager {
 
   pause(groupId: string): CoordinationRun {
     const run = this.requireActive(groupId);
-    if (run.status === "running" || run.status === "planning") {
+    if (run.status === "running" || run.status === "planning" || run.status === "reviewing") {
       run.status = "paused";
       this.event(run, "control", "Dispatch paused; running tasks may finish");
       this.publish(run);
@@ -317,6 +377,8 @@ export class CoordinationManager {
     }
     for (const wake of this.resumeWaiters.get(run.id) ?? []) wake();
     this.event(run, "control", "Run cancelled");
+    run.report = buildCoordinationReport(run);
+    this.options.appendChannelMessage?.(run.groupId, run.report);
     this.publish(run);
     return run;
   }
@@ -331,7 +393,7 @@ export class CoordinationManager {
 
   private requireActive(groupId: string): CoordinationRun {
     const run = this.latest(groupId);
-    if (!run || !["planning", "running", "paused"].includes(run.status)) throw new Error("This channel has no active coordination run");
+    if (!run || !["planning", "running", "paused", "reviewing"].includes(run.status)) throw new Error("This channel has no active coordination run");
     return run;
   }
 
@@ -339,9 +401,12 @@ export class CoordinationManager {
     const controller = new AbortController();
     this.controllers.set(run.id, controller);
     try {
+      const bots = this.options.groupBots(run.groupId);
+      const planner = bots.find((bot) => bot.id === run.plannerBotId) ?? assigned.architect;
+      const requested = bots.filter((bot) => run.requestedBotIds.includes(bot.id));
       const orchestrator = new OpenMultiAgent({
         defaultModel: "roundtable",
-        maxConcurrency: 4,
+        maxConcurrency: run.policySnapshot.maxConcurrency,
         schedulingStrategy: "dependency-first",
         strictAssignees: true,
         onProgress: (event) => this.onProgress(run, event),
@@ -355,20 +420,25 @@ export class CoordinationManager {
       const team = orchestrator.createTeam(`roundtable-${run.id}`, {
         name: `roundtable-${run.id}`,
         sharedMemory: true,
-        maxConcurrency: 4,
+        maxConcurrency: run.policySnapshot.maxConcurrency,
         agents: ROLES.map((role) => ({ name: role, description: ROLE_PROMPTS[role], capabilities: [role], model: assigned[role].model || "roundtable", systemPrompt: ROLE_PROMPTS[role], adapter: adapters[role] })),
       });
 
-      const planningAdapter = new RoundtableAdapter((prompt, signal) => this.invokePlanning(run, assigned.architect, prompt, signal ?? controller.signal));
+      const planningAdapter = new RoundtableAdapter((prompt, signal) => this.invokePlanning(run, planner, prompt, signal ?? controller.signal));
       let plan: PlanArtifact;
       try {
         const preview = await orchestrator.runTeam(team, run.goal, {
           mode: "team",
           planOnly: true,
           coordinator: {
-            model: assigned.architect.model || "roundtable",
+            model: planner.model || "roundtable",
             adapter: planningAdapter,
-            instructions: "Create a concrete implementation DAG. Use only architect, developer, tester, reviewer as assignees. Include implementation and verification work; reviewer must be the terminal gate.",
+            instructions: [
+              "Create the smallest concrete DAG that safely completes the goal.",
+              "Use only architect, developer, tester, reviewer as assignees.",
+              "A simple goal may be one task. Add Tester or a terminal Reviewer only when complexity or risk warrants it.",
+              requested.length ? `Scheduling constraint: the plan must include work for ${requested.map((bot) => bot.name).join(", ")}.` : "Choose only necessary channel members.",
+            ].join(" "),
           },
           abortSignal: controller.signal,
         });
@@ -376,10 +446,13 @@ export class CoordinationManager {
       } catch (error) {
         if (controller.signal.aborted) throw error;
         plan = fallbackPlan(run.goal);
-        this.event(run, "run", `Dynamic planning fell back to the standard four-stage DAG: ${error instanceof Error ? error.message : String(error)}`);
+        this.event(run, "run", `Dynamic planning fell back to a deterministic DAG: ${error instanceof Error ? error.message : String(error)}`);
       }
 
-      run.tasks = plan.tasks.map((task) => this.toRunTask(task, assigned));
+      const bound = this.bindRequestedBots(plan, requested, assigned);
+      plan = bound.plan;
+      const bindings = bound.bindings;
+      run.tasks = plan.tasks.map((task) => this.toRunTask(task, assigned, undefined, bindings.get(task.id)));
       run.status = run.status === "paused" ? "paused" : "running";
       run.startedAt = this.now();
       this.event(run, "run", `DAG ready with ${run.tasks.length} tasks`);
@@ -389,7 +462,7 @@ export class CoordinationManager {
       if (controller.signal.aborted) return;
 
       const reviewer = [...run.tasks].reverse().find((task) => task.role === "reviewer" && task.status === "completed");
-      if (reviewer && !reviewApproved(reviewer.output) && run.fixCycles < 2) {
+      if (reviewer && !reviewApproved(reviewer.output) && run.fixCycles < run.policySnapshot.maxFixCycles) {
         await this.runFixCycle(run, orchestrator, team, assigned, reviewer, controller.signal);
       }
       const failed = run.tasks.some((task) => task.status === "failed" || task.status === "blocked");
@@ -425,9 +498,10 @@ export class CoordinationManager {
     rejected: CoordinationTask,
     signal: AbortSignal,
   ): Promise<void> {
+    if (run.status !== "paused") run.status = "running";
     run.fixCycles += 1;
     const cycle = run.fixCycles;
-    this.event(run, "review", `Reviewer requested changes; generating Fix tasks (cycle ${cycle}/2)`, rejected.id);
+    this.event(run, "review", `Reviewer requested changes; generating Fix tasks (cycle ${cycle}/${run.policySnapshot.maxFixCycles})`, rejected.id);
     const ids = { fix: `fix-${cycle}-${randomUUID()}`, test: `fix-test-${cycle}-${randomUUID()}`, review: `fix-review-${cycle}-${randomUUID()}` };
     const plan: PlanArtifact = { version: 1, goal: run.goal, tasks: [
       { id: ids.fix, title: `Fix reviewer findings (cycle ${cycle})`, description: `Apply these reviewer findings:\n${rejected.output ?? "No details supplied"}`, role: "developer", assignee: "developer" },
@@ -441,15 +515,55 @@ export class CoordinationManager {
     const result = await orchestrator.runFromPlan(team, plan, { abortSignal: signal });
     this.applyResult(run, result);
     const nextReview = run.tasks.find((task) => task.id === ids.review);
-    if (nextReview && !reviewApproved(nextReview.output) && run.fixCycles < 2) {
+    if (nextReview && !reviewApproved(nextReview.output) && run.fixCycles < run.policySnapshot.maxFixCycles) {
       await this.runFixCycle(run, orchestrator, team, assigned, nextReview, signal);
     }
   }
 
-  private toRunTask(task: PlanTaskArtifact, assigned: CoordinationAssignments, fixCycle?: number): CoordinationTask {
+  private bindRequestedBots(
+    plan: PlanArtifact,
+    requested: CoordinationBot[],
+    assigned: CoordinationAssignments,
+  ): CoordinationPlanBinding {
+    const bindings = new Map<string, CoordinationBot>();
+    const tasks: PlanTaskArtifact[] = plan.tasks.map((task) => ({ ...task, dependsOn: [...(task.dependsOn ?? [])] }));
+    const available = [...tasks];
+    for (const bot of requested) {
+      const preferred = bestRole(bot);
+      let index = available.findIndex((task) => inferRole(task, 0, 1) === preferred);
+      if (index < 0) index = 0;
+      let task = available.splice(index, 1)[0];
+      if (!task) {
+        const role = preferred;
+        task = {
+          id: `participate-${bot.id}-${randomUUID()}`,
+          title: `${bot.name} contribution`,
+          description: `Contribute your specialist perspective to the goal: ${plan.goal}`,
+          role,
+          assignee: role,
+        };
+        const reviewIndex = tasks.findIndex((candidate) => inferRole(candidate, 0, 1) === "reviewer");
+        if (reviewIndex >= 0) {
+          const review = tasks[reviewIndex]!;
+          tasks[reviewIndex] = { ...review, dependsOn: [...new Set([...(review.dependsOn ?? []), task.id])] };
+        }
+        tasks.push(task);
+      }
+      bindings.set(task.id, bot);
+    }
+    for (const task of tasks) {
+      if (bindings.has(task.id)) continue;
+      const role = inferRole(task, 0, 1);
+      bindings.set(task.id, assigned[role]);
+    }
+    return { plan: { ...plan, tasks }, bindings };
+  }
+
+  private toRunTask(task: PlanTaskArtifact, assigned: CoordinationAssignments, fixCycle?: number, botOverride?: CoordinationBot): CoordinationTask {
     // SAFETY: membership in the closed ROLES tuple is checked before preserving OMA's string role.
     const role = (ROLES.includes(task.role as CoordinationRole) ? task.role : inferRole(task, 0, 1)) as CoordinationRole;
-    return { id: task.id, title: task.title, description: task.description, role, botId: assigned[role].id, botName: assigned[role].name, dependsOn: [...(task.dependsOn ?? [])], status: "pending", attempt: 1, fixCycle };
+    const bot = botOverride ?? assigned[role];
+    return { id: task.id, title: task.title, description: task.description, role, botId: bot.id, botName: bot.name, dependsOn: [...(task.dependsOn ?? [])], status: "pending", attempt: 1, fixCycle };
   }
 
   private async invokePlanning(run: CoordinationRun, bot: CoordinationBot, prompt: string, signal: AbortSignal): Promise<BotTurnResult> {
@@ -485,6 +599,7 @@ export class CoordinationManager {
     const task = event.task ? run.tasks.find((candidate) => candidate.id === event.task) : undefined;
     if (event.type === "task_start" && task) {
       task.status = "running";
+      if (task.role === "reviewer" && run.status !== "paused") run.status = "reviewing";
       task.startedAt ??= this.now();
       if (event.agent) this.activeTaskByRole.set(`${run.id}:${event.agent}`, task.id);
       this.event(run, "task", `${task.botName} started ${task.title}`, task.id);
@@ -550,7 +665,12 @@ export class CoordinationManager {
       if (parsed.version === 1 && Array.isArray(parsed.runs)) {
         this.runs = parsed.runs;
         for (const run of this.runs) {
-          if (["planning", "running", "paused"].includes(run.status)) {
+          run.requestedBotIds ??= [];
+          run.policySnapshot ??= { maxConcurrency: 4, maxFixCycles: 2, requirePlanApproval: false };
+          run.plannerBotId ??= run.roles.architect.botId;
+          run.plannerBotName ??= run.roles.architect.botName;
+          run.plannerSelectionReason ??= "Recovered from an earlier Coordinator run";
+          if (["planning", "running", "paused", "reviewing"].includes(run.status)) {
             run.status = "failed";
             run.finishedAt = this.now();
             run.error = "Roundtable restarted while this run was active; retry to continue";
@@ -578,7 +698,20 @@ export function buildCoordinationReport(run: CoordinationRun): string {
     `**Fix cycles:** ${run.fixCycles}`,
     "",
     "## Tasks",
-    ...run.tasks.map((task) => `- ${task.status === "completed" ? "✓" : task.status === "failed" ? "✗" : "•"} ${task.title} — ${task.botName} (${task.role})${task.error ? `: ${task.error}` : ""}`),
+    ...run.tasks.map((task) => `- ${task.status === "completed" ? "✓" : task.status === "failed" ? "✗" : "•"} ${task.title} — ${task.botName} (${task.role})${task.error ? `: ${task.error}` : ""}${task.threadId ? ` [task ${task.threadId}]` : ""}`),
+    "",
+    "## Reviewer verdict",
+    ...(() => {
+      const reviews = run.tasks.filter((task) => task.role === "reviewer");
+      if (!reviews.length) return ["- Not required for this run."];
+      return reviews.map((task) => `- ${task.title}: ${reviewApproved(task.output) ? "APPROVED" : /CHANGES_REQUESTED/i.test(task.output ?? "") ? "CHANGES_REQUESTED" : task.status.toUpperCase()}`);
+    })(),
+    "",
+    "## Failures and approvals",
+    ...(run.tasks.some((task) => task.error)
+      ? run.tasks.filter((task) => task.error).map((task) => `- ${task.title}: ${task.error}`)
+      : ["- No task failures recorded."]),
+    "- Tool approvals remain enforced and auditable in each linked Bot task; Coordinator does not bypass them.",
     "",
     "## Timeline",
     ...run.events.map((event) => `- ${new Date(event.at).toLocaleTimeString()} — ${event.message}`),
