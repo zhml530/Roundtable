@@ -678,7 +678,7 @@ export function GroupView({ group }: { group: Group }) {
   const noDrag = isWin ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties) : undefined;
 
   return (
-    <main className="relative flex h-full min-w-0 flex-1 flex-col bg-app">
+    <main className="chat-area relative flex h-full min-w-0 flex-1 flex-col bg-app">
       <GroupCallOverlay group={group} members={members} />
       {membersOpen && !group.dm && (
         <ManageMembersPanel group={group} onClose={closeMembers} triggerRef={membersTriggerRef} />

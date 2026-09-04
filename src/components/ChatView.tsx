@@ -975,7 +975,7 @@ export function ChatView({ bot }: { bot: Bot }) {
   const noDrag = isWin ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties) : undefined;
 
   return (
-    <main className="relative flex h-full min-w-0 flex-1 flex-col bg-app">
+    <main className="chat-area relative flex h-full min-w-0 flex-1 flex-col bg-app">
       {/* Call mode covers the thread while the bot is on the line */}
       <CallOverlay bot={bot} />
       {/* Header */}

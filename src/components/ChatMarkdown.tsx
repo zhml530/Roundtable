@@ -47,7 +47,8 @@ function CodeBlock({ code, lang, streaming }: { code: string; lang: string; stre
         .then((shiki) =>
           shiki.codeToHtml(code, {
             lang: lang || "text",
-            theme: "github-dark-default",
+            themes: { light: "github-light", dark: "github-dark-default" },
+            defaultColor: "dark",
           }),
         )
         .then((out) => {

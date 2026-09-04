@@ -264,6 +264,20 @@
   --radius-xl: 14px;
 }
 
+/* Neutral reading surfaces, with Lagoon's teal retained in the app chrome. */
+[data-skin="lagoon"] .chat-area {
+  --color-app: #ffffff;
+  --color-inset: #f5f5f5;
+  --color-bubble-user: #f0f0f0;
+}
+
+/* Shiki emits both palettes so switching skins also updates cached blocks.
+   Its dark foreground must never sit on a light theme's inset surface. */
+:is([data-skin="lagoon"], [data-skin="atelier"]) .chat-md .shiki,
+:is([data-skin="lagoon"], [data-skin="atelier"]) .chat-md .shiki span {
+  color: var(--shiki-light) !important;
+}
+
 html,
 body,
 #root {
