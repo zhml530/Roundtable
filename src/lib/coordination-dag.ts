@@ -14,7 +14,7 @@ export interface CoordinationDagLayout {
 }
 
 const CARD_W = 196;
-const CARD_H = 76;
+const CARD_H = 94;
 const GAP_X = 54;
 const GAP_Y = 24;
 

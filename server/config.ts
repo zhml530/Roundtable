@@ -38,7 +38,8 @@ const coordinatorConfigSchema = z.object({
   preset: z.enum(["quality", "balanced", "economy"]).default("balanced"),
   planningTimeoutMs: z.number().int().min(10_000).max(600_000).default(120_000),
   planningRetries: z.number().int().min(0).max(3).default(1),
-  maxConcurrency: z.number().int().min(1).max(16).default(4),
+  // Accept legacy saved values while normalizing every run to Duo.
+  maxConcurrency: z.number().int().min(1).max(16).default(2).transform(() => 2),
   maxFixCycles: z.number().int().min(0).max(10).default(2),
   maxRunMinutes: z.number().int().min(1).max(1_440).default(60),
   maxTokens: z.number().int().positive().optional(),
@@ -134,14 +135,14 @@ export const DEFAULT_COORDINATOR_CONFIG: NonNullable<AppConfig["coordinator"]> =
   preset: "balanced",
   planningTimeoutMs: 120_000,
   planningRetries: 1,
-  maxConcurrency: 4,
+  maxConcurrency: 2,
   maxFixCycles: 2,
   maxRunMinutes: 60,
   requireHighRiskReview: true,
 };
 
 export function coordinatorConfig(cfg: AppConfig): NonNullable<AppConfig["coordinator"]> {
-  return { ...DEFAULT_COORDINATOR_CONFIG, ...cfg.coordinator };
+  return { ...DEFAULT_COORDINATOR_CONFIG, ...cfg.coordinator, maxConcurrency: 2 };
 }
 
 // OMB_DATA_DIR isolates test/soak rigs from the user's real fleet.

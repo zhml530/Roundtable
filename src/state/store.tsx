@@ -138,6 +138,7 @@ export interface CoordinationRun {
   plannerBotName?: string;
   plannerSelectionReason?: string;
   requestedBotIds: string[];
+  requestedBots?: Array<{ id: string; name: string }>;
   policySnapshot: {
     maxConcurrency: number;
     maxFixCycles: number;

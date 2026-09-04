@@ -38,6 +38,192 @@ const policy = () => ({
 });
 
 describe("Coordinator domain", () => {
+  it("overlaps independent same-role tasks, refills two slots, gates dependencies, and tracks every mentioned bot", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "roundtable-duo-"));
+    dirs.push(dir);
+    const crew = [...bots, { ...bots[0]!, id: "dev2", name: "Dev Two" }];
+    const proposal = [
+      { id: "a", title: "A", description: "Inspect module alpha", role: "developer", botId: "dev" },
+      { id: "b", title: "B", description: "Inspect module beta", role: "developer", botId: "dev2" },
+      { id: "c", title: "C", description: "Inspect interfaces", role: "architect", botId: "arch" },
+      { id: "d", title: "D", description: "Verify all findings", role: "tester", botId: "test", dependsOn: ["a", "b", "c"] },
+      { id: "e", title: "E", description: "Review all evidence", role: "reviewer", botId: "review", dependsOn: ["d"] },
+    ];
+    const started: string[] = [];
+    const finished = new Set<string>();
+    const releases = new Map<string, () => void>();
+    const prompts = new Map<string, string>();
+    let active = 0;
+    let peak = 0;
+    const snapshots: CoordinationRun[] = [];
+    const manager = new CoordinationManager({
+      file: join(dir, "runs.json"), groupBots: () => crew,
+      coordinatorPolicy: () => ({ ...policy(), maxConcurrency: 16 }),
+      runCoordinatorTurn: async () => ({ text: JSON.stringify(proposal) }),
+      createTask: (_bot, title) => ({ threadId: title.split(" ").at(-1)!.toLowerCase() }),
+      emit: ({ run }) => snapshots.push(structuredClone(run)),
+      runBotTurn: async ({ botId, threadId, prompt, signal }) => {
+        expect(botId).toBe(proposal.find((task) => task.id === threadId)!.botId);
+        for (const dependency of proposal.find((task) => task.id === threadId)!.dependsOn ?? []) expect(finished.has(dependency)).toBe(true);
+        started.push(threadId);
+        prompts.set(threadId, prompt);
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise<void>((resolve) => {
+          releases.set(threadId, resolve);
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        active -= 1;
+        finished.add(threadId);
+        return { text: `Result ${threadId}\nVERDICT: APPROVED` };
+      },
+    });
+    try {
+      const run = await manager.start("room", "@everyone investigate together");
+      await vi.waitFor(() => expect(started).toHaveLength(2));
+      expect(peak).toBe(2);
+      expect(started).toEqual(expect.arrayContaining(["a", "b"]));
+      expect(run.policySnapshot.maxConcurrency).toBe(2);
+      expect(run.requestedBotIds).toHaveLength(5);
+      expect(new Set(run.tasks.map((task) => task.botId))).toEqual(new Set(crew.map((bot) => bot.id)));
+      expect(run.tasks.find((task) => task.id === "c")?.status).toBe("ready");
+      expect(run.tasks.find((task) => task.id === "d")?.status).toBe("pending");
+      releases.get("a")!();
+      await vi.waitFor(() => expect(started).toContain("c"));
+      expect(finished.has("b")).toBe(false); // refill without a batch barrier
+      expect(started).not.toContain("d");
+      releases.get("c")!();
+      await vi.waitFor(() => expect(finished.has("c")).toBe(true));
+      expect(started).not.toContain("d");
+      releases.get("b")!();
+      await vi.waitFor(() => expect(started).toContain("d"));
+      expect(prompts.get("d")).toContain("Result a");
+      expect(prompts.get("d")).toContain("Result b");
+      releases.get("d")!();
+      await vi.waitFor(() => expect(started).toContain("e"));
+      releases.get("e")!();
+      await vi.waitFor(() => expect(run.status).toBe("completed"));
+      expect(peak).toBe(2);
+      expect(snapshots.every((snapshot) => snapshot.tasks.filter((task) => task.status === "running").length <= 2)).toBe(true);
+      for (const task of run.tasks) {
+        expect(task.output).toContain(`Result ${task.id}`);
+        expect(task.threadId).toBe(task.id);
+        expect(run.events.some((event) => event.taskId === task.id && event.message.includes("assigned:"))).toBe(true);
+      }
+      const restored = new CoordinationManager({
+        file: join(dir, "runs.json"), groupBots: () => crew, coordinatorPolicy: policy,
+        runCoordinatorTurn: async () => ({ text: "[]" }), createTask: () => null,
+        runBotTurn: async () => ({ text: "unused" }),
+      }).latest("room")!;
+      expect(restored.requestedBots).toEqual(crew.map(({ id, name }) => ({ id, name })));
+      expect(restored.tasks).toEqual(run.tasks);
+    } finally {
+      if (["planning", "running", "paused", "reviewing"].includes(manager.latest("room")?.status ?? "")) await manager.cancel("room");
+    }
+  });
+
+  it("blocks a mention-all plan with missing assignments instead of inventing parallel work", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "roundtable-duo-missing-"));
+    dirs.push(dir);
+    const runBotTurn = vi.fn(async () => ({ text: "unused" }));
+    const manager = new CoordinationManager({
+      file: join(dir, "runs.json"), groupBots: () => bots, coordinatorPolicy: policy,
+      runCoordinatorTurn: async () => ({ text: JSON.stringify([{ title: "One", description: "Inspect", role: "developer", botId: "dev" }]) }),
+      createTask: () => ({ threadId: "unused" }), runBotTurn,
+    });
+    const run = await manager.start("room", "@all investigate");
+    await vi.waitFor(() => expect(run.status).toBe("planning_blocked"));
+    expect(run.error).toContain("omitted an assignment");
+    expect(run.requestedBots).toHaveLength(4);
+    expect(run.planRevisions[0]?.accepted).toBe(false);
+    expect(runBotTurn).not.toHaveBeenCalled();
+  });
+
+  it("serializes two independent tasks assigned to the same bot", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "roundtable-duo-bot-lock-"));
+    dirs.push(dir);
+    let active = 0;
+    let peak = 0;
+    const manager = new CoordinationManager({
+      file: join(dir, "runs.json"), groupBots: () => bots, coordinatorPolicy: policy,
+      runCoordinatorTurn: async () => ({ text: JSON.stringify([
+        { title: "One", description: "Inspect alpha", role: "developer", botId: "dev" },
+        { title: "Two", description: "Inspect beta", role: "developer", botId: "dev" },
+      ]) }),
+      createTask: (_bot, title) => ({ threadId: title }),
+      runBotTurn: async () => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        active -= 1;
+        return { text: "VERDICT: APPROVED" };
+      },
+    });
+    const run = await manager.start("room", "Inspect independently");
+    await vi.waitFor(() => expect(run.status).toBe("completed"));
+    expect(peak).toBe(1);
+    expect(run.tasks.filter((task) => task.botId === "dev")).toHaveLength(2);
+  });
+
+  it("lets an independent branch finish when another fails, but blocks its dependents", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "roundtable-duo-failure-"));
+    dirs.push(dir);
+    const started: string[] = [];
+    const manager = new CoordinationManager({
+      file: join(dir, "runs.json"), groupBots: () => bots, coordinatorPolicy: policy,
+      runCoordinatorTurn: async () => ({ text: JSON.stringify([
+        { id: "a", title: "A", description: "Inspect alpha", role: "developer", botId: "dev" },
+        { id: "b", title: "B", description: "Inspect beta", role: "architect", botId: "arch" },
+        { id: "c", title: "C", description: "Verify alpha", role: "tester", botId: "test", dependsOn: ["a"] },
+      ]) }),
+      createTask: (_bot, title) => ({ threadId: title.split(" ").at(-1)! }),
+      runBotTurn: async ({ threadId }) => {
+        started.push(threadId);
+        if (threadId === "A") throw new Error("alpha unavailable");
+        return { text: "Independent result" };
+      },
+    });
+    const run = await manager.start("room", "Inspect branches");
+    await vi.waitFor(() => expect(run.status).toBe("failed"));
+    expect(started).toContain("B");
+    expect(started).not.toContain("C");
+    expect(run.tasks.find((task) => task.id === "b")?.status).toBe("completed");
+    expect(run.tasks.find((task) => task.id === "c")?.status).toBe("blocked");
+  });
+
+  it("cancels both workers without starting queued work or accepting a replacement before drain", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "roundtable-duo-cancel-"));
+    dirs.push(dir);
+    const releases: Array<() => void> = [];
+    const started: string[] = [];
+    const manager = new CoordinationManager({
+      file: join(dir, "runs.json"), groupBots: () => bots, coordinatorPolicy: policy,
+      runCoordinatorTurn: async () => ({ text: JSON.stringify([
+        { title: "A", description: "Inspect alpha", role: "developer", botId: "dev" },
+        { title: "B", description: "Inspect beta", role: "architect", botId: "arch" },
+        { title: "C", description: "Inspect gamma", role: "tester", botId: "test" },
+      ]) }),
+      createTask: (_bot, title) => ({ threadId: title }),
+      runBotTurn: async ({ threadId }) => {
+        started.push(threadId);
+        await new Promise<void>((resolve) => releases.push(resolve));
+        return { text: "Late result\nVERDICT: APPROVED" };
+      },
+    });
+    const run = await manager.start("room", "Inspect branches");
+    try {
+      await vi.waitFor(() => expect(started).toHaveLength(2));
+      await manager.cancel("room");
+      expect(() => manager.validateStart("room", "replacement")).toThrow("active coordination run");
+    } finally {
+      releases.forEach((release) => release());
+    }
+    await vi.waitFor(() => expect(() => manager.validateStart("room", "replacement")).not.toThrow());
+    expect(started).toHaveLength(2);
+    expect(run.status).toBe("cancelled");
+    expect(run.tasks.every((task) => task.status === "cancelled")).toBe(true);
+  });
+
   it("assigns four distinct bots from profile evidence", () => {
     const roles = assignCoordinationRoles(bots);
     expect(roles.architect.id).toBe("arch");

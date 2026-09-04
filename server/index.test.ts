@@ -231,6 +231,8 @@ beforeAll(async () => {
       OMB_COMPOSIO_API: `http://127.0.0.1:${boxStubPort}/api/v3.1`,
       OMB_STATIC_DIR: staticDir,
       FAKE_CLAUDE_MODE: "hang",
+      FAKE_CLAUDE_PLANNING_GOAL: "DUO_GUARD_FIXTURE",
+      FAKE_CLAUDE_PLANNING_REPLY: JSON.stringify([{ title: "Inspect", description: "Inspect the assigned scope", role: "developer" }]),
       FAKE_CLAUDE_DUMP: fakeClaudeDump,
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -1531,6 +1533,41 @@ describe("harness HTTP API", () => {
     expect(disk.features).toEqual({ skillRecorder: true });
 
     await api("PATCH", "/api/config", { features: { skillRecorder: false } });
+  });
+
+  it("prevents coordinated workers from starting untracked peer turns outside the Duo limit", async () => {
+    const botId = (await api("POST", "/api/bots", {})).body.bot.id;
+    const peerId = (await api("POST", "/api/bots", {})).body.bot.id;
+    const room = (await api("POST", "/api/groups", { name: "Duo scheduling guard", memberIds: [botId] })).body.group;
+    try {
+      await api("PATCH", `/api/groups/${room.id}/setup`, { action: "skip" });
+      await api("PATCH", `/api/bots/${botId}`, { modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } });
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "DUO_GUARD_FIXTURE" })).status).toBe(202);
+      await expect.poll(() => {
+        if (!existsSync(fakeClaudeDump)) return false;
+        return Boolean(JSON.parse(readFileSync(fakeClaudeDump, "utf8")).mcpConfig?.mcpServers?.agents);
+      }, { timeout: 5_000 }).toBe(true);
+      const dump = JSON.parse(readFileSync(fakeClaudeDump, "utf8"));
+      const proxyEnv = dump.mcpConfig.mcpServers.agents.env;
+      const run = (await api("GET", `/api/groups/${room.id}/coordination`)).body.run;
+      expect(run.tasks.some((task: { threadId?: string }) => task.threadId === proxyEnv.OMB_THREAD_ID)).toBe(true);
+      for (const endpoint of ["ask-bot", "delegate-bot"]) {
+        const response = await fetch(`${BASE}/api/internal/${endpoint}`, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${proxyEnv.OMB_COMMS_TOKEN}` },
+          body: JSON.stringify({ fromBotId: botId, fromThreadId: proxyEnv.OMB_THREAD_ID, toBotId: peerId, message: "Start extra work" }),
+        });
+        expect(response.status).toBe(409);
+        expect(await response.text()).toContain("Coordinator owns teammate scheduling");
+      }
+    } finally {
+      await settleCoordination(room.id);
+      await expect.poll(async () => Boolean((await api("GET", "/api/bots")).body.bots.find((bot: { id: string }) => bot.id === botId)?.busy), { timeout: 5_000 }).toBe(false);
+      await api("DELETE", `/api/groups/${room.id}`);
+      await api("DELETE", `/api/bots/${botId}`);
+      await api("DELETE", `/api/bots/${peerId}`);
+    }
   });
 
   it("keeps an active turn alive when only the room timeout changes", async () => {

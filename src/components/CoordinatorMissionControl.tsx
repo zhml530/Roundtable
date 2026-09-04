@@ -77,6 +77,12 @@ export function CoordinatorMissionControl({ group }: { group: Group }) {
   }
 
   const active = ["planning", "validating", "running", "paused", "reviewing"].includes(run.status);
+  const taskLabel = (task: CoordinationTask) => {
+    if (task.status === "pending") return "Waiting for dependencies";
+    if (task.status === "ready") return run.status === "paused" ? "Paused" : "Waiting for a slot";
+    if (task.status === "running" && !task.threadId) return "Waiting for Bot / starting";
+    return task.status;
+  };
   return (
     <section className="mx-auto mb-2 w-full max-w-[900px] px-5" aria-label="DAG Mission Control">
       <div className="overflow-hidden rounded-2xl border border-hairline/50 bg-card shadow-sm">
@@ -97,8 +103,16 @@ export function CoordinatorMissionControl({ group }: { group: Group }) {
         {expanded && <>
           <div className="grid gap-px border-b border-hairline/40 bg-hairline/30 sm:grid-cols-2">
             <div className="bg-card px-3 py-2"><div className="text-[9.5px] font-semibold uppercase tracking-wider text-ink-secondary">Coordinator model</div><div className="truncate text-[12px] text-ink">{run.coordinatorSnapshot.actualModel?.model ?? run.coordinatorSnapshot.requestedModel.model}</div><div className="truncate text-[10.5px] text-ink-secondary">{run.coordinatorSnapshot.actualModel?.instanceId ?? run.coordinatorSnapshot.requestedModel.instanceId} · {run.coordinatorSnapshot.promptVersion}</div></div>
-            <div className="bg-card px-3 py-2"><div className="text-[9.5px] font-semibold uppercase tracking-wider text-ink-secondary">Policy</div><div className="truncate text-[12px] text-ink">Up to {run.policySnapshot.maxConcurrency} parallel · {run.policySnapshot.maxFixCycles} fix cycles</div><div className="truncate text-[10.5px] text-ink-secondary">Runtime Coordinator owns scheduling and controls</div></div>
+            <div className="bg-card px-3 py-2"><div className="text-[9.5px] font-semibold uppercase tracking-wider text-ink-secondary">Execution</div><div className="truncate text-[12px] text-ink">{run.tasks.filter((task) => task.status === "running").length}/{run.policySnapshot.maxConcurrency} slots in use · {run.policySnapshot.maxFixCycles} fix cycles</div><div className="truncate text-[10.5px] text-ink-secondary">Independent tasks overlap; dependencies wait</div></div>
           </div>
+          {run.requestedBotIds.length > 0 && <div className="border-b border-hairline/40 px-3 py-2 text-[11.5px]" aria-label="Mentioned Bot assignments">
+            <div className="font-semibold text-ink-secondary">Mentioned Bots · {run.requestedBotIds.filter((id) => run.tasks.some((task) => task.botId === id)).length}/{run.requestedBotIds.length} assigned</div>
+            {run.requestedBotIds.map((id) => {
+              const tasks = run.tasks.filter((task) => task.botId === id);
+              const name = run.requestedBots?.find((bot) => bot.id === id)?.name ?? tasks[0]?.botName ?? id;
+              return <div key={id} className="mt-1 text-ink"><span className="font-medium">{name}</span>: {tasks.length ? tasks.map((task) => `${task.title} (${taskLabel(task)})`).join(" · ") : run.status === "planning_blocked" ? "Assignment missing — revise the plan" : run.status === "cancelled" || run.status === "failed" ? "Not assigned" : "Awaiting Coordinator plan"}</div>;
+            })}
+          </div>}
           <div className="max-h-[330px] overflow-auto bg-inset/40">
             {(run.status === "planning" || run.status === "validating") && layout.nodes.length === 0 ? <div className="flex items-center justify-center gap-2 py-10 text-[13px] text-ink-secondary"><Loader2 size={15} className="animate-spin" /> Coordinator Intelligence is {run.status === "validating" ? "being validated" : "generating the DAG"}…</div> :
             <div className="relative" style={{ width: layout.width, height: layout.height }}>
@@ -111,16 +125,17 @@ export function CoordinatorMissionControl({ group }: { group: Group }) {
                   return <path key={`${dependency}-${node.task.id}`} d={`M ${x1} ${y1} C ${x1 + 24} ${y1}, ${x2 - 24} ${y2}, ${x2} ${y2}`} fill="none" className="stroke-ink-secondary/35" strokeWidth="1.5" markerEnd={`url(#dag-arrow-${run.id})`} />;
                 }))}
               </svg>
-              {layout.nodes.map(({ task, x, y }) => <button key={task.id} type="button" disabled={!task.threadId} onClick={() => void openTask(task)} title={task.threadId ? "Open this bot conversation" : "Conversation starts when the task runs"} className={cn("absolute rounded-xl border p-2.5 text-left transition hover:brightness-110 disabled:cursor-default", STATUS_STYLE[task.status])} style={{ left: x, top: y, width: DAG_CARD_WIDTH, height: DAG_CARD_HEIGHT }}>
+              {layout.nodes.map(({ task, x, y }) => <button key={task.id} type="button" disabled={!task.threadId} onClick={() => void openTask(task)} title={`${taskLabel(task)} — ${task.description}`} className={cn("absolute rounded-xl border p-2.5 text-left transition hover:brightness-110 disabled:cursor-default", STATUS_STYLE[task.status])} style={{ left: x, top: y, width: DAG_CARD_WIDTH, height: DAG_CARD_HEIGHT }}>
                 <div className="flex items-center gap-1.5"><span className={cn("size-2 shrink-0 rounded-full", STATUS_DOT[task.status])} /><span className="truncate text-[10px] font-semibold uppercase tracking-wide text-ink-secondary">{task.role} · {task.botName}</span>{task.threadId && <ExternalLink size={10} className="ml-auto shrink-0 text-ink-secondary" />}</div>
                 <div className="mt-1 line-clamp-2 text-[12px] font-medium leading-snug text-ink">{task.title}</div>
+                <div className="mt-1 text-[10px] text-ink-secondary">{taskLabel(task)}</div>
                 {task.fixCycle && <span className="absolute bottom-1.5 right-2 text-[9px] text-amber-500">fix {task.fixCycle}</span>}
               </button>)}
             </div>}
           </div>
           <div className="flex items-center justify-between gap-3 px-3 py-2 text-[11px] text-ink-secondary"><span>{run.tasks.filter((task) => task.status === "completed").length}/{run.tasks.filter((task) => task.id !== "planning").length} tasks complete · {run.fixCycles} fix cycles</span><span className="truncate">{run.events.at(-1)?.message}</span></div>
         </>}
-        {error && <div className="border-t border-danger/20 bg-danger/10 px-3 py-2 text-[12px] text-danger">{error}</div>}
+        {(error || run.error) && <div className="border-t border-danger/20 bg-danger/10 px-3 py-2 text-[12px] text-danger">{error ?? run.error}</div>}
       </div>
     </section>
   );

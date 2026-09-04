@@ -14,15 +14,15 @@ const DEFAULTS: CoordinatorSettingsValue = {
   preset: "balanced",
   planningTimeoutMs: 120_000,
   planningRetries: 1,
-  maxConcurrency: 4,
+  maxConcurrency: 2,
   maxFixCycles: 2,
   maxRunMinutes: 60,
   requireHighRiskReview: true,
 };
 
 const PRESETS = {
-  quality: { planningRetries: 2, maxConcurrency: 4, maxFixCycles: 3, planningTimeoutMs: 180_000 },
-  balanced: { planningRetries: 1, maxConcurrency: 4, maxFixCycles: 2, planningTimeoutMs: 120_000 },
+  quality: { planningRetries: 2, maxConcurrency: 2, maxFixCycles: 3, planningTimeoutMs: 180_000 },
+  balanced: { planningRetries: 1, maxConcurrency: 2, maxFixCycles: 2, planningTimeoutMs: 120_000 },
   economy: { planningRetries: 0, maxConcurrency: 2, maxFixCycles: 1, planningTimeoutMs: 60_000 },
 } satisfies Record<CoordinatorSettingsValue["preset"], Partial<CoordinatorSettingsValue>>;
 
@@ -143,6 +143,7 @@ export function CoordinatorSettings() {
 
       <div className="rounded-xl bg-card p-4">
         <div className="text-[15px] font-medium text-ink">Runtime policy</div>
+        <p className="mt-2 text-[13px] text-ink-secondary">Up to 2 tasks run at once per channel. Coordinator decides which tasks are independent; @everyone includes every Bot in the plan.</p>
         <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
           {(["quality", "balanced", "economy"] as const).map((preset) => <button key={preset} onClick={() => void save({ ...draft, ...PRESETS[preset], preset })} className={cn("flex-1 py-2 text-[13px] capitalize", draft.preset === preset ? "bg-control text-ink" : "text-ink-secondary")}>{preset}</button>)}
         </div>
@@ -150,7 +151,6 @@ export function CoordinatorSettings() {
           {([
             ["Planning timeout (seconds)", "planningTimeoutMs", draft.planningTimeoutMs / 1000, 10, 600, 1000],
             ["Planning retries", "planningRetries", draft.planningRetries, 0, 3, 1],
-            ["Maximum concurrent tasks", "maxConcurrency", draft.maxConcurrency, 1, 16, 1],
             ["Maximum fix cycles", "maxFixCycles", draft.maxFixCycles, 0, 10, 1],
             ["Run time budget (minutes)", "maxRunMinutes", draft.maxRunMinutes, 1, 1440, 1],
           ] as const).map(([label, key, value, min, max, multiplier]) => (
@@ -167,7 +167,7 @@ export function CoordinatorSettings() {
 
       <div className="rounded-xl bg-card p-4 text-[12.5px] text-ink-secondary">
         <div className="font-medium text-ink">Diagnostics</div>
-        <div className="mt-2">Prompt: coordinator-planner-v1 · Model policy: v1 · Runtime policy: v1</div>
+        <div className="mt-2">Prompt: coordinator-planner-v2 · Model policy: v1 · Runtime policy: v2</div>
         <div className="mt-1">Active runs keep an immutable copy of these settings.</div>
       </div>
     </div>

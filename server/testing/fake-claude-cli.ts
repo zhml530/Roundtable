@@ -136,6 +136,18 @@ const playTurn = (prompt: JsonValue) => {
   // the real CLI re-announces init on every turn of a live process
   out({ type: "system", subtype: "init", session_id: sessionId, model });
 
+  // Opt-in Coordinator API fixture: only the marked planning request gets
+  // a plan; its detached worker still follows the configured hang mode.
+  if (process.env.FAKE_CLAUDE_PLANNING_GOAL && process.env.FAKE_CLAUDE_PLANNING_REPLY
+    && promptText(prompt).includes(process.env.FAKE_CLAUDE_PLANNING_GOAL)
+    && argv.some((arg) => arg.includes("Roundtable Coordinator Intelligence"))) {
+    out({ type: "assistant", message: { content: [{ type: "text", text: process.env.FAKE_CLAUDE_PLANNING_REPLY }] } });
+    out({ type: "result", is_error: false, stop_reason: "end_turn", usage: { input_tokens: 10, output_tokens: 5 } });
+    turnRunning = false;
+    finishIfDone();
+    return;
+  }
+
   if (mode === "hang") {
     // stay alive until killed — lets tests exercise interrupt + the
     // permission broker while a turn is officially in flight

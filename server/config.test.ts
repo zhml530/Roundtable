@@ -89,6 +89,8 @@ describe("configuration boundaries", () => {
     });
     expect(parsed.coordinator?.primary?.instanceId).toBe("copilot");
     expect(parsed.coordinator?.failureMode).toBe("fallback");
+    expect(parsed.coordinator?.maxConcurrency).toBe(2);
+    expect(coordinatorConfig({ coordinator: { ...coordinatorConfig({}), maxConcurrency: 16 } }).maxConcurrency).toBe(2);
     expect(coordinatorConfig({}).planningTimeoutMs).toBe(120_000);
     expect(() => parseConfigPatch({ coordinator: { maxConcurrency: 0 } })).toThrow("coordinator.maxConcurrency");
   });

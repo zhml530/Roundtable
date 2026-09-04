@@ -70,6 +70,7 @@ export interface CoordinationRun {
   plannerBotName?: string;
   plannerSelectionReason?: string;
   requestedBotIds: string[];
+  requestedBots?: Array<{ id: string; name: string }>;
   policySnapshot: {
     maxConcurrency: number;
     maxFixCycles: number;
@@ -172,12 +173,17 @@ const ROLE_PROMPTS = {
   reviewer: "Own the final gate. Review implementation and test evidence. End with exactly one line: VERDICT: APPROVED or VERDICT: CHANGES_REQUESTED. If requesting changes, list concrete fixes.",
 } as const satisfies Record<CoordinationRole, string>;
 
-export const COORDINATOR_PROMPT_VERSION = "coordinator-planner-v1";
+export const COORDINATION_MAX_CONCURRENCY = 2;
+export const COORDINATOR_PROMPT_VERSION = "coordinator-planner-v2";
 export const COORDINATOR_SYSTEM_PROMPT = [
   "You are Roundtable Coordinator Intelligence, an untrusted planning dependency with no tools or execution authority.",
   "Propose the smallest safe task DAG for the supplied goal and context.",
   "Use only architect, developer, tester, or reviewer roles.",
-  "Return JSON only: an array of objects with title, description, role, assignee, and optional dependsOn title array.",
+  "Return JSON only: an array of objects with title, description, role, botId (from availableBots), and optional dependsOn title array.",
+  "The runtime allows at most two worker tasks at once per channel run. Leave independent tasks without mutual dependencies; never add dependencies merely to impose speaker order.",
+  "Declare real input dependencies: implementation waits for required design, final verification waits for implementation, and final review waits for all relevant work.",
+  "Describe each task's input, deliverable and file scope. Tasks modifying the same files or testing a changing workspace must have dependencies to prevent unsafe overlap.",
+  "Every requestedBotId must own at least one meaningful task. Mentioning everyone means all participate, not all start at once. Do not invent unnecessary work; a scoped independent check is enough.",
   "Never claim that you changed runtime state, ran tools, approved actions, or completed tasks.",
 ].join(" ");
 
@@ -187,10 +193,14 @@ const coordinatorProposalSchema = z.array(z.object({
   description: z.string().min(1),
   role: z.enum(ROLES).optional(),
   assignee: z.enum(ROLES).optional(),
+  botId: z.string().min(1).optional(),
   dependsOn: z.array(z.string().min(1)).optional(),
 })).min(1).max(100);
 
-function parseCoordinatorProposal(text: string, goal: string): PlanArtifact {
+type BoundPlanTask = PlanTaskArtifact & { botId?: string };
+type BoundPlan = Omit<PlanArtifact, "tasks"> & { tasks: readonly BoundPlanTask[] };
+
+function parseCoordinatorProposal(text: string, goal: string): BoundPlan {
   let decoded: unknown;
   try {
     decoded = JSON.parse(text);
@@ -222,6 +232,7 @@ function parseCoordinatorProposal(text: string, goal: string): PlanArtifact {
       description: task.description,
       role: task.role,
       assignee: task.assignee ?? task.role,
+      botId: task.botId,
       dependsOn: task.dependsOn?.map((dependency) => references.get(dependency) ?? dependency),
     })),
   };
@@ -245,7 +256,7 @@ function roleScore(bot: CoordinationBot, role: CoordinationRole): number {
 }
 
 function requestedBots(goal: string, bots: CoordinationBot[]): CoordinationBot[] {
-  if (/(?:^|\s)@everyone\b/i.test(goal)) return [...bots];
+  if (/(?:^|\s)@(?:everyone|all)\b/i.test(goal)) return [...bots];
   const lower = goal.toLowerCase();
   return bots
     .filter((bot) => {
@@ -285,6 +296,8 @@ export function assignCoordinationRoles(bots: CoordinationBot[]): CoordinationAs
 }
 
 function inferRole(task: PlanTaskArtifact, index: number, total: number): CoordinationRole {
+  const explicitRole = ROLES.find((role) => role === task.role) ?? ROLES.find((role) => role === task.assignee);
+  if (explicitRole) return explicitRole;
   const text = `${task.role ?? ""} ${task.assignee ?? ""} ${task.title} ${task.description}`.toLowerCase();
   for (const role of ROLES) if (ROLE_WORDS[role].some((word) => text.includes(word))) return role;
   if (index === 0) return "architect";
@@ -309,6 +322,10 @@ export function normalizeCoordinationPlan(plan: PlanArtifact, goal: string, requ
   // simple goal may remain one task, which is the key Coordinator v2 cost rule.
   const terminalIds = tasks.filter((candidate) => !tasks.some((other) => other.dependsOn?.includes(candidate.id))).map((task) => task.id);
   const reviewerIsTerminal = tasks.some((task) => task.role === "reviewer" && terminalIds.includes(task.id));
+  // An existing final review must join every independent branch, not just
+  // whichever branch the planner happened to connect to it.
+  const finalReview = tasks.findLast((task) => task.role === "reviewer" && terminalIds.includes(task.id));
+  if (finalReview) finalReview.dependsOn = [...new Set([...finalReview.dependsOn, ...terminalIds.filter((id) => id !== finalReview.id)])];
   const highRisk = /\b(security|auth|payment|billing|production|deploy|delete|migration|permission|credential)\b|安全|生产|部署|删除|迁移|权限|凭据/i.test(goal);
   if (!reviewerIsTerminal && (tasks.length > 1 || (requireHighRiskReview && highRisk))) {
     tasks.push({
@@ -424,7 +441,7 @@ export class CoordinationManager {
   private readonly now: () => number;
   private runs: CoordinationRun[] = [];
   private controllers = new Map<string, AbortController>();
-  private activeTaskByRole = new Map<string, string>();
+  private botTurns = new Map<string, Promise<void>>();
   private resumeWaiters = new Map<string, Set<() => void>>();
 
   constructor(options: CoordinationManagerOptions) {
@@ -436,6 +453,10 @@ export class CoordinationManager {
 
   latest(groupId: string): CoordinationRun | undefined {
     return this.runs.filter((run) => run.groupId === groupId).sort((a, b) => b.createdAt - a.createdAt)[0];
+  }
+
+  ownsActiveThread(threadId: string): boolean {
+    return this.runs.some((run) => this.controllers.has(run.id) && run.tasks.some((task) => task.threadId === threadId));
   }
 
   async testCoordinator(): Promise<{ ok: true; latencyMs: number; model: ModelSelection; taskCount: number }> {
@@ -463,7 +484,7 @@ export class CoordinationManager {
   validateStart(groupId: string, rawGoal: string): void {
     if (!rawGoal.trim()) throw new Error("Tell the coordinator what outcome you want");
     const existing = this.latest(groupId);
-    if (existing && ["planning", "validating", "running", "paused", "reviewing"].includes(existing.status)) {
+    if (existing && (this.controllers.has(existing.id) || ["planning", "validating", "running", "paused", "reviewing"].includes(existing.status))) {
       throw new Error("This channel already has an active coordination run");
     }
     if (this.options.groupBots(groupId).length === 0) {
@@ -481,8 +502,9 @@ export class CoordinationManager {
     const run: CoordinationRun = {
       id: randomUUID(), groupId, goal, status: "planning", tasks: [], events: [], createdAt: this.now(), fixCycles: 0,
       requestedBotIds: requested.map((bot) => bot.id),
+      requestedBots: requested.map(({ id, name }) => ({ id, name })),
       policySnapshot: {
-        maxConcurrency: Math.min(policy.maxConcurrency, Math.max(1, bots.length)),
+        maxConcurrency: Math.min(COORDINATION_MAX_CONCURRENCY, Math.max(1, bots.length)),
         maxFixCycles: policy.maxFixCycles,
         requirePlanApproval: false,
         planningRetries: policy.planningRetries,
@@ -495,7 +517,7 @@ export class CoordinationManager {
         backupModel: policy.backup ? structuredClone(policy.backup) : undefined,
         modelPolicyVersion: 1,
         promptVersion: COORDINATOR_PROMPT_VERSION,
-        runtimePolicyVersion: 1,
+        runtimePolicyVersion: 2,
         planningBudget: { timeoutMs: policy.planningTimeoutMs, maxTokens: policy.maxTokens, maxCost: policy.maxCostUsd },
       },
       planRevisions: [],
@@ -583,23 +605,16 @@ export class CoordinationManager {
         onProgress: (event) => this.onProgress(run, event),
         onTaskDispatch: async () => {
           await this.waitWhilePaused(run, controller.signal);
-          return run.status === "cancelled" ? false : true;
+          return !controller.signal.aborted && run.status !== "cancelled";
         },
       });
-      const adapterFor = (role: CoordinationRole) => new RoundtableAdapter((prompt, signal) => this.invokeRole(run, role, prompt, signal ?? controller.signal));
-      const adapters = { architect: adapterFor("architect"), developer: adapterFor("developer"), tester: adapterFor("tester"), reviewer: adapterFor("reviewer") };
-      const team = orchestrator.createTeam(`roundtable-${run.id}`, {
-        name: `roundtable-${run.id}`,
-        sharedMemory: true,
-        maxConcurrency: run.policySnapshot.maxConcurrency,
-        agents: ROLES.map((role) => ({ name: role, description: ROLE_PROMPTS[role], capabilities: [role], model: assigned[role].model || "roundtable", systemPrompt: ROLE_PROMPTS[role], adapter: adapters[role] })),
-      });
-
       let plan: PlanArtifact;
+      let bindings: Map<string, CoordinationBot>;
       let pausedAfterPlanning = false;
       try {
         const compiledContext = {
           goal: run.goal,
+          requestedBotIds: run.requestedBotIds,
           constraints: requested.length
             ? [`Include work for these bot IDs: ${requested.map((bot) => bot.id).join(", ")}`]
             : [],
@@ -622,6 +637,10 @@ export class CoordinationManager {
         }
         plan = normalizeCoordinationPlan(parseCoordinatorProposal(proposal.text, run.goal), run.goal, run.policySnapshot.requireHighRiskReview);
         validateCoordinationPlan(plan);
+        const bound = this.bindRequestedBots(plan, requested, assigned, bots);
+        plan = bound.plan;
+        bindings = bound.bindings;
+        validateCoordinationPlan(plan);
         const revision = run.planRevisions.at(-1);
         if (revision) revision.accepted = true;
       } catch (error) {
@@ -640,21 +659,19 @@ export class CoordinationManager {
         return;
       }
 
-      const bound = this.bindRequestedBots(plan, requested, assigned);
-      plan = bound.plan;
-      const bindings = bound.bindings;
       run.tasks = plan.tasks.map((task) => this.toRunTask(task, assigned, undefined, bindings.get(task.id)));
       run.status = pausedAfterPlanning ? "paused" : "running";
       run.startedAt = this.now();
       this.event(run, "run", `DAG ready with ${run.tasks.length} tasks`);
+      for (const task of run.tasks) this.event(run, "task", `${task.botName} assigned: ${task.title}`, task.id);
       this.publish(run);
-      const result = await orchestrator.runFromPlan(team, plan, { abortSignal: controller.signal });
+      const result = await this.runPlan(run, orchestrator, plan, controller.signal);
       this.applyResult(run, result);
       if (controller.signal.aborted) return;
 
       const reviewer = [...run.tasks].reverse().find((task) => task.role === "reviewer" && task.status === "completed");
       if (reviewer && !reviewApproved(reviewer.output) && run.fixCycles < run.policySnapshot.maxFixCycles) {
-        await this.runFixCycle(run, orchestrator, team, assigned, reviewer, controller.signal);
+        await this.runFixCycle(run, orchestrator, assigned, reviewer, controller.signal);
       }
       const failed = run.tasks.some((task) => task.status === "failed" || task.status === "blocked");
       run.status = failed ? "failed" : "completed";
@@ -678,14 +695,12 @@ export class CoordinationManager {
     } finally {
       clearTimeout(runTimer);
       this.controllers.delete(run.id);
-      for (const role of ROLES) this.activeTaskByRole.delete(`${run.id}:${role}`);
     }
   }
 
   private async runFixCycle(
     run: CoordinationRun,
     orchestrator: OpenMultiAgent,
-    team: ReturnType<OpenMultiAgent["createTeam"]>,
     assigned: CoordinationAssignments,
     rejected: CoordinationTask,
     signal: AbortSignal,
@@ -704,42 +719,37 @@ export class CoordinationManager {
     added[0]!.dependsOn = [rejected.id]; // UI lineage; OMA's sub-plan remains independently executable.
     run.tasks.push(...added);
     this.publish(run);
-    const result = await orchestrator.runFromPlan(team, plan, { abortSignal: signal });
+    const result = await this.runPlan(run, orchestrator, plan, signal);
     this.applyResult(run, result);
     const nextReview = run.tasks.find((task) => task.id === ids.review);
     if (nextReview && !reviewApproved(nextReview.output) && run.fixCycles < run.policySnapshot.maxFixCycles) {
-      await this.runFixCycle(run, orchestrator, team, assigned, nextReview, signal);
+      await this.runFixCycle(run, orchestrator, assigned, nextReview, signal);
     }
   }
 
   private bindRequestedBots(
-    plan: PlanArtifact,
+    plan: BoundPlan,
     requested: CoordinationBot[],
     assigned: CoordinationAssignments,
+    bots: CoordinationBot[],
   ): CoordinationPlanBinding {
     const bindings = new Map<string, CoordinationBot>();
     const tasks: PlanTaskArtifact[] = plan.tasks.map((task) => ({ ...task, dependsOn: [...(task.dependsOn ?? [])] }));
-    const available = [...tasks];
+    for (const task of plan.tasks) {
+      if (!task.botId) continue;
+      const bot = bots.find((candidate) => candidate.id === task.botId);
+      if (!bot) throw new Error(`Task ${task.title} names an unavailable bot: ${task.botId}`);
+      bindings.set(task.id, bot);
+    }
+    const available = tasks.filter((task) => !bindings.has(task.id));
     for (const bot of requested) {
+      if ([...bindings.values()].some((bound) => bound.id === bot.id)) continue;
       const preferred = bestRole(bot);
       let index = available.findIndex((task) => inferRole(task, 0, 1) === preferred);
       if (index < 0) index = 0;
-      let task = available.splice(index, 1)[0];
+      const task = available.splice(index, 1)[0];
       if (!task) {
-        const role = preferred;
-        task = {
-          id: `participate-${bot.id}-${randomUUID()}`,
-          title: `${bot.name} contribution`,
-          description: `Contribute your specialist perspective to the goal: ${plan.goal}`,
-          role,
-          assignee: role,
-        };
-        const reviewIndex = tasks.findIndex((candidate) => inferRole(candidate, 0, 1) === "reviewer");
-        if (reviewIndex >= 0) {
-          const review = tasks[reviewIndex]!;
-          tasks[reviewIndex] = { ...review, dependsOn: [...new Set([...(review.dependsOn ?? []), task.id])] };
-        }
-        tasks.push(task);
+        throw new Error(`Coordinator omitted an assignment for mentioned bot ${bot.name}; revise the plan to include every requested bot`);
       }
       bindings.set(task.id, bot);
     }
@@ -818,33 +828,69 @@ export class CoordinationManager {
     throw lastError instanceof Error ? lastError : new Error(String(lastError ?? "Coordinator planning failed"));
   }
 
-  private async invokeRole(run: CoordinationRun, role: CoordinationRole, prompt: string, signal: AbortSignal): Promise<BotTurnResult> {
-    const activeId = this.activeTaskByRole.get(`${run.id}:${role}`);
-    const task = run.tasks.find((item) => item.id === activeId) ?? run.tasks.find((item) => item.role === role && item.status === "running");
-    if (!task) throw new Error(`OMA dispatched ${role} without an active task`);
-    return this.invokeTask(run, task, prompt, signal);
+  private async runPlan(run: CoordinationRun, orchestrator: OpenMultiAgent, plan: PlanArtifact, signal: AbortSignal): Promise<TeamRunResult> {
+    // One adapter per task: concurrent tasks with the same role must never
+    // route through a mutable role -> current task lookup.
+    const team = orchestrator.createTeam(`roundtable-${run.id}-${run.fixCycles}`, {
+      name: `roundtable-${run.id}-${run.fixCycles}`,
+      sharedMemory: true,
+      maxConcurrency: COORDINATION_MAX_CONCURRENCY,
+      agents: plan.tasks.map((node) => {
+        const task = run.tasks.find((candidate) => candidate.id === node.id)!;
+        return {
+          name: `worker-${task.id}`,
+          description: ROLE_PROMPTS[task.role],
+          capabilities: [task.role],
+          model: "roundtable",
+          systemPrompt: ROLE_PROMPTS[task.role],
+          adapter: new RoundtableAdapter((prompt, abortSignal) => this.invokeTask(run, task, prompt, abortSignal ?? signal)),
+        };
+      }),
+    });
+    return orchestrator.runFromPlan(team, {
+      ...plan,
+      tasks: plan.tasks.map((task) => ({ ...task, assignee: `worker-${task.id}` })),
+    }, { abortSignal: signal });
   }
 
   private async invokeTask(run: CoordinationRun, task: CoordinationTask, prompt: string, signal: AbortSignal): Promise<BotTurnResult> {
-    if (!task.threadId) {
-      const detached = this.options.createTask(task.botId, `[${task.role}] ${task.title}`);
-      if (!detached) throw new Error(`Could not create a conversation for ${task.botName}`);
-      task.threadId = detached.threadId;
-      this.publish(run);
+    const previous = this.botTurns.get(task.botId) ?? Promise.resolve();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const tail = previous.then(() => held);
+    this.botTurns.set(task.botId, tail);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const abort = () => reject(new Error("Coordination run cancelled"));
+        signal.addEventListener("abort", abort, { once: true });
+        void previous.then(() => { signal.removeEventListener("abort", abort); resolve(); });
+        if (signal.aborted) abort();
+      });
+      await this.waitWhilePaused(run, signal);
+      if (signal.aborted) throw new Error("Coordination run cancelled");
+      if (!task.threadId) {
+        const detached = this.options.createTask(task.botId, `[${task.role}] ${task.title}`);
+        if (!detached) throw new Error(`Could not create a conversation for ${task.botName}`);
+        task.threadId = detached.threadId;
+        this.publish(run);
+      }
+      const result = await this.options.runBotTurn({ botId: task.botId, threadId: task.threadId, prompt, signal });
+      task.output = result.text;
+      task.usage = result.usage;
+      return result;
+    } finally {
+      release();
+      void tail.then(() => { if (this.botTurns.get(task.botId) === tail) this.botTurns.delete(task.botId); });
     }
-    const result = await this.options.runBotTurn({ botId: task.botId, threadId: task.threadId, prompt, signal });
-    task.output = result.text;
-    task.usage = result.usage;
-    return result;
   }
 
   private onProgress(run: CoordinationRun, event: OrchestratorEvent): void {
+    if (run.status === "cancelled") return;
     const task = event.task ? run.tasks.find((candidate) => candidate.id === event.task) : undefined;
     if (event.type === "task_start" && task) {
       task.status = "running";
       if (task.role === "reviewer" && run.status !== "paused") run.status = "reviewing";
       task.startedAt ??= this.now();
-      if (event.agent) this.activeTaskByRole.set(`${run.id}:${event.agent}`, task.id);
       this.event(run, "task", `${task.botName} started ${task.title}`, task.id);
     } else if (event.type === "task_complete" && task) {
       task.status = "completed";
@@ -863,6 +909,7 @@ export class CoordinationManager {
   }
 
   private applyResult(run: CoordinationRun, result: TeamRunResult): void {
+    if (run.status === "cancelled") return;
     for (const record of result.tasks ?? []) {
       const task = run.tasks.find((candidate) => candidate.id === record.id);
       if (!task) continue;
@@ -875,6 +922,16 @@ export class CoordinationManager {
       if (["completed", "failed", "blocked"].includes(task.status)) task.finishedAt ??= this.now();
       const output = result.taskResults?.get(record.id)?.output;
       if (output !== undefined) task.output = output;
+    }
+    // OMA can label a never-dispatched descendant as failed. Keep the UI
+    // distinction between a worker failure and work blocked by that failure.
+    for (const task of run.tasks) {
+      if (task.status !== "failed" || task.threadId) continue;
+      const unavailable = task.dependsOn.filter((id) => run.tasks.some((dependency) => dependency.id === id && ["failed", "blocked", "cancelled"].includes(dependency.status)));
+      if (unavailable.length) {
+        task.status = "blocked";
+        task.error = `Blocked by dependencies: ${unavailable.join(", ")}`;
+      }
     }
     this.publish(run);
   }
@@ -896,6 +953,10 @@ export class CoordinationManager {
   }
 
   private publish(run: CoordinationRun): void {
+    for (const task of run.tasks) {
+      if (task.status !== "pending" && task.status !== "ready") continue;
+      task.status = task.dependsOn.every((id) => run.tasks.some((dependency) => dependency.id === id && dependency.status === "completed")) ? "ready" : "pending";
+    }
     this.save();
     this.options.emit?.({ kind: "coordination", groupId: run.groupId, run });
   }
