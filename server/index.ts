@@ -1347,13 +1347,16 @@ async function startTurn(
     replaysNatively: instance.driverKind === "grok",
   });
 
-  const persona = [
+  // A name alone is a display label; only an explicit profile opts into
+  // Roundtable's persona, automatic memory, and bundled skill guidance.
+  const hasProfile = Boolean(bot.title.trim() || bot.description.trim());
+  const persona = hasProfile ? [
     `You are ${bot.name}, a personal bot in Roundtable.`,
     bot.title && `Role: ${bot.title}.`,
     bot.description && `About: ${bot.description}`,
   ]
     .filter(Boolean)
-    .join(" ");
+    .join(" ") : "";
 
   // busy flips immediately so the composer locks; the dispatch itself runs
   // in the background — box provisioning can take ~90s and must never
@@ -1365,16 +1368,16 @@ async function startTurn(
   void (async () => {
     try {
       const integrations: NonNullable<Parameters<typeof instance.adapter.sendTurn>[0]["integrations"]> = {};
-      const selectedSkills = selectBundledSkills(
+      const selectedSkills = hasProfile ? selectBundledSkills(
         text,
         [],
         availableSkills(),
-      );
+      ) : [];
       // the user's connected apps, but only to a driver that can mount
       // them — a key in the config says the connections exist, not that
       // this engine can reach them — and only to a bot the user has not
       // switched off: the key is workspace-wide, the grant is per bot.
-      if (bot.composio !== false && composio.configured(cfg) && instance.adapter.capabilities.composioMcp === true) {
+      if ((hasProfile ? bot.composio !== false : bot.composio === true) && composio.configured(cfg) && instance.adapter.capabilities.composioMcp === true) {
         const connection = await connectedAppsIntegration(bot.id, threadId);
         if (connection) integrations.composio = connection;
       }
@@ -1416,7 +1419,7 @@ async function startTurn(
 
       // Cloud is strict when explicitly selected. Auto (unset) reuses an
       // existing cloud box without provisioning.
-      if ((wants === "cloud" || wants === undefined) && box.boxConfigured(cfg)) {
+      if ((wants === "cloud" || (hasProfile && wants === undefined)) && box.boxConfigured(cfg)) {
         if (!mountsCloudComputer && wants === "cloud") {
           throw new Error("this model engine cannot use computer tools — choose Claude, an ACP engine, or the Computer engine");
         }
@@ -1467,7 +1470,10 @@ async function startTurn(
           !candidate.hidden &&
           sectionKey(candidate.section) === sectionKey(bot.section),
       );
+      const coordinatorManaged = coordination?.ownsActiveThread(threadId);
+      const mentioned = mentionedBots(text, sectionPeers);
       if (
+        (hasProfile || coordinatorManaged || mentioned.length > 0) &&
         commsDepth < MAX_COMMS_DEPTH &&
         instance.adapter.capabilities.agentsMcp === true
       ) {
@@ -1477,15 +1483,11 @@ async function startTurn(
       // an explicit delegation nudge — the agent still does the ask_bot call
       // itself, so the harness stays the single owner of turns/permissions
       const tagged = integrations.agents
-        ? mentionedBots(
-            text,
-            sectionPeers,
-          )
+        ? mentioned
         : [];
-      const coordinatorManaged = coordination?.ownsActiveThread(threadId);
       const coordinationPrompt = coordinatorManaged
         ? "Coordinator owns teammate scheduling for this task. Do not call ask_bot or delegate_bot; report any additional work needed in your result so it can be planned."
-        : integrations.agents && sectionPeers.length > 0
+        : integrations.agents && sectionPeers.length > 0 && (hasProfile || tagged.length > 0)
         ? "You can work with the other bots in your section through the agents tools — list_bots shows who's available, ask_bot sends one of them a message and returns their reply."
         : "";
       const credentialPrompt = integrations.agents
@@ -1520,7 +1522,8 @@ async function startTurn(
           (coordinationPrompt ? ` ${coordinationPrompt}` : "") +
           credentialPrompt +
           sectionContextSystemPrompt(bot.section) +
-          (privateWorkspace ? memorySystemPrompt(bot.id) + skillsSystemPrompt(bot.id) : "") +
+          (privateWorkspace && hasProfile ? memorySystemPrompt(bot.id) : "") +
+          (privateWorkspace ? skillsSystemPrompt(bot.id) : "") +
           skillInstructions +
           packagePlaybooks +
           (opts?.automationSource === "webhook"
@@ -1901,11 +1904,12 @@ async function runGroupMemberTurn(
   if (hop < MAX_COMMS_DEPTH && instance.adapter.capabilities.agentsMcp === true) {
     integrations.agents = agentsIntegration(bot.id, group.threadId, hop);
   }
-  const selectedSkills = selectBundledSkills(
+  const hasProfile = Boolean(bot.title.trim() || bot.description.trim());
+  const selectedSkills = hasProfile ? selectBundledSkills(
     serializeRoomContext(group.threadId, userName),
     [],
     availableSkills(),
-  );
+  ) : [];
   try {
     if (bot.composio !== false && composio.configured(cfg) && instance.adapter.capabilities.composioMcp === true) {
       const connection = await connectedAppsIntegration(bot.id, group.threadId);
@@ -1963,7 +1967,8 @@ async function runGroupMemberTurn(
   const roomSystem =
     system +
     sectionContextSystemPrompt(bot.section) +
-    (workspace ? `\n${memorySystemPrompt(bot.id).trim()}${skillsSystemPrompt(bot.id)}` : "") +
+    (workspace && hasProfile ? `\n${memorySystemPrompt(bot.id).trim()}` : "") +
+    (workspace ? skillsSystemPrompt(bot.id) : "") +
     renderSkillInstructions(selectedSkills, { includeRoot: Boolean(workspace) }) +
     installedPlaybookInstructions(text, bot.playbooks);
 

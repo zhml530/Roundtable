@@ -1584,6 +1584,47 @@ describe("harness HTTP API", () => {
     }
   }, 45_000);
 
+  it.each([
+    { title: "", description: "", customized: false },
+    { title: "  ", description: "\n", customized: false },
+    { title: "Reviewer", description: "", customized: true },
+    { title: "", description: "Review code carefully", customized: true },
+  ])("uses native backend behavior for an empty profile: %j", async ({ title, description, customized }) => {
+    const bot = (await api("POST", "/api/bots", {})).body.bot;
+    try {
+      await api("PATCH", `/api/bots/${bot.id}`, {
+        name: "Native display label", title, description,
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      });
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "Help me review this code" })).status).toBe(202);
+      await expect.poll(() => existsSync(fakeClaudeDump), { timeout: 5_000 }).toBe(true);
+      const dump = JSON.parse(readFileSync(fakeClaudeDump, "utf8"));
+      const flag = dump.argv.indexOf("--append-system-prompt");
+      const system = flag < 0 ? "" : dump.argv[flag + 1];
+      expect(system.includes("You are Native display label")).toBe(customized);
+      expect(system.includes("Your private long-term memory file")).toBe(customized);
+      if (customized) {
+        if (title.trim()) expect(system).toContain("Role: Reviewer.");
+        if (description.trim()) expect(system).toContain("About: Review code carefully");
+      } else {
+        expect(system).not.toContain("<openmaus-skill");
+        expect(system).not.toContain("You can work with the other bots");
+      }
+      // A plain native chat must not learn the host identity from default
+      // MCP tool descriptions or their associated prompt instructions.
+      expect(Boolean(dump.mcpConfig?.mcpServers?.agents)).toBe(customized);
+      expect(system.includes("request_credential")).toBe(customized);
+      if (!customized) {
+        expect(system).toBe("");
+        expect(dump.argv).not.toContain("--append-system-prompt");
+      }
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/interrupt`);
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
   it("prevents coordinated workers from starting untracked peer turns outside the Duo limit", async () => {
     const botId = (await api("POST", "/api/bots", {})).body.bot.id;
     const peerId = (await api("POST", "/api/bots", {})).body.bot.id;

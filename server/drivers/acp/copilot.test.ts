@@ -207,13 +207,17 @@ describe("GitHub Copilot ACP support", () => {
     });
     const recorder = recordEvents(instance.adapter);
     try {
-      await instance.adapter.sendTurn({ threadId: "t-copilot", text: "hi", model: "gpt-5.3-codex" });
+      await instance.adapter.sendTurn({ threadId: "t-copilot", text: "Introduce yourself", model: "gpt-5.3-codex" });
       await recorder.until((event) => event.type === "turn.completed");
 
       const seen = JSON.parse(readFileSync(dump, "utf8"));
       expect(seen.argv).toEqual(["--allow-all", "--model", "gpt-5.3-codex", "--acp"]);
       expect(seen.env.COPILOT_GITHUB_TOKEN).toBe("copilot-should-keep");
       expect(seen.env.XAI_API_KEY).toBeUndefined();
+      expect(JSON.parse(readFileSync(`${dump}.prompt.json`, "utf8"))).toEqual([
+        { type: "text", text: "Introduce yourself" },
+      ]);
+      expect(JSON.parse(readFileSync(`${dump}.mcp.json`, "utf8"))).toEqual([]);
       expect(recorder.events.some((event) => event.type === "turn.completed" && event.ok)).toBe(true);
 
       expect(JSON.parse(readFileSync(`${dump}.config.json`, "utf8"))).toContainEqual({

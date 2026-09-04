@@ -387,6 +387,10 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
               onChange={(e) => patch({ title: e.target.value })}
             />
           </Field>
+          <p className="text-[13px] text-ink-secondary">
+            Leave Title and Description blank to use the backend’s native behavior.
+            Add either to enable a Roundtable profile with automatic memory and bundled skills.
+          </p>
           <Field label="Description">
             <textarea
               className={cn(inputCls, "min-h-[96px] resize-none")}
