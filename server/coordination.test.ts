@@ -6,8 +6,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   assignCoordinationRoles,
   buildCoordinationReport,
+  buildCoordinationAnswer,
   CoordinationManager,
   fallbackPlan,
+  implementationRequested,
   normalizeCoordinationPlan,
   reviewApproved,
   validateCoordinationPlan,
@@ -38,6 +40,40 @@ const policy = () => ({
 });
 
 describe("Coordinator domain", () => {
+  it("keeps research and summaries out of automatic implementation loops", () => {
+    expect(implementationRequested("Evaluate VLM feasibility and propose an evaluation plan")).toBe(false);
+    expect(implementationRequested("I need the summary, don't implement anything")).toBe(false);
+    expect(implementationRequested("Now fix the project summary delivery issues")).toBe(true);
+    expect(fallbackPlan("Investigate architecture feasibility").tasks).toHaveLength(1);
+  });
+
+  it.each([
+    ["Evaluate VLM feasibility", 0],
+    ["Implement a video pipeline", 2],
+  ])("separates review rejection from execution completion for %s", async (goal, cycles) => {
+    const dir = mkdtempSync(join(tmpdir(), "channel-review-")); dirs.push(dir);
+    const receipts: Array<{ text: string; report?: string }> = [];
+    const manager = new CoordinationManager({
+      file: join(dir, "runs.json"), groupBots: () => bots, coordinatorPolicy: policy,
+      synthesize: true,
+      runCoordinatorTurn: async ({ purpose }) => ({ text: purpose === "synthesis" ? "Prototype evidence is incomplete; real measurements remain pending." : JSON.stringify([
+        { id: "findings", title: "Findings", description: "Assess evidence", role: "architect" },
+        { id: "review", title: "Review", description: "Check findings", role: "reviewer", dependsOn: ["findings"] },
+      ]) }),
+      createTask: (id) => ({ threadId: id }),
+      runBotTurn: async () => ({ text: "Missing evidence. VERDICT: CHANGES_REQUESTED" }),
+      appendChannelMessage: (_id, text, run) => receipts.push({ text, report: run?.report }),
+    });
+    const run = await manager.start("room", goal);
+    await vi.waitFor(() => expect(run.status).toBe("completed"));
+    expect(run.fixCycles).toBe(cycles);
+    expect(run.reviewStatus).toBe("changes_requested");
+    expect(receipts.at(-1)?.text).toContain("Prototype evidence");
+    expect(receipts.at(-1)?.text).toContain("without review acceptance");
+    expect(receipts.at(-1)?.text).not.toContain("## Timeline");
+    expect(receipts.at(-1)?.report).toContain("## Timeline");
+  });
+
   it("overlaps independent same-role tasks, refills two slots, gates dependencies, and tracks every mentioned bot", async () => {
     const dir = mkdtempSync(join(tmpdir(), "roundtable-duo-"));
     dirs.push(dir);
@@ -275,7 +311,7 @@ describe("Coordinator domain", () => {
 
   it("provides a one-task fallback for a simple goal", () => {
     const plan = fallbackPlan("demo");
-    expect(plan.tasks.map((task) => task.role)).toEqual(["developer"]);
+    expect(plan.tasks.map((task) => task.role)).toEqual(["architect"]);
   });
 
   it("builds a report with task receipts and a timeline", () => {
@@ -297,6 +333,23 @@ describe("Coordinator domain", () => {
     expect(report).toContain("Coordinator report — completed");
     expect(report).toContain("Build — Dara (developer)");
     expect(report).toContain("## Timeline");
+    run.tasks[0]!.output = "Keep GPT-4o as the final answerer. Compare historical keyframes first.";
+    expect(buildCoordinationAnswer(run)).toBe(run.tasks[0]!.output);
+    run.tasks.push({ ...run.tasks[0]!, id: "review", role: "reviewer", title: "Review", dependsOn: ["t"], output: "VERDICT: APPROVED" });
+    run.answer = "Project recommendation based on the findings and review.";
+    expect(buildCoordinationAnswer(run)).toBe(run.answer);
+    run.tasks[1]!.output = "Missing real-screen measurements. VERDICT: CHANGES_REQUESTED";
+    expect(buildCoordinationAnswer(run)).toContain("Review remains unresolved");
+    expect(buildCoordinationAnswer(run)).toContain("without review acceptance");
+    run.tasks.push({ ...run.tasks[0]!, id: "independent", title: "Independent findings", output: "Independent result" });
+    expect(buildCoordinationAnswer(run)).toContain(run.answer);
+    expect(buildCoordinationAnswer(run)).not.toContain("Independent result");
+    run.tasks.push({ ...run.tasks[0]!, id: "summary", title: "Summary", dependsOn: ["t", "review", "independent"], output: "Consolidated recommendation" });
+    expect(buildCoordinationAnswer(run)).toContain(run.answer);
+    expect(buildCoordinationAnswer(run)).not.toContain("Independent result");
+    delete run.answer;
+    expect(buildCoordinationAnswer(run)).toContain("consolidated summary is unavailable");
+    expect(buildCoordinationAnswer(run)).not.toContain("Consolidated recommendation");
   });
 
   it("runs a generated OMA plan through detached Roundtable bot tasks", async () => {
@@ -307,14 +360,23 @@ describe("Coordinator domain", () => {
     const channelMessages: string[] = [];
     const manager = new CoordinationManager({
       file: join(dir, "runs.json"),
+      synthesize: true,
       groupBots: () => bots,
       coordinatorPolicy: policy,
-      runCoordinatorTurn: async () => ({ text: JSON.stringify([
+      runCoordinatorTurn: async ({ purpose, prompt }) => {
+        if (purpose === "synthesis") {
+          expect(prompt).toContain("worker output 1");
+          expect(prompt).toContain("worker output 3");
+          expect(prompt).toContain("VERDICT: APPROVED");
+          return { text: "The project is implemented and verified.", usage: { input: 20, output: 10 } };
+        }
+        return { text: JSON.stringify([
         { title: "Design", description: "Design interfaces", assignee: "architect", role: "architect" },
         { title: "Build", description: "Implement design", assignee: "developer", role: "developer", dependsOn: ["Design"] },
         { title: "Test", description: "Verify build", assignee: "tester", role: "tester", dependsOn: ["Build"] },
         { title: "Review", description: "Review evidence", assignee: "reviewer", role: "reviewer", dependsOn: ["Test"] },
-      ]) }),
+      ]) };
+      },
       createTask: () => ({ threadId: `thread-${++threads}` }),
       runBotTurn: async () => {
         calls += 1;
@@ -329,7 +391,10 @@ describe("Coordinator domain", () => {
     expect(run.tasks.filter((task) => task.id !== "planning")).toHaveLength(4);
     expect(run.tasks.every((task) => task.threadId)).toBe(true);
     expect(run.tasks.at(-1)?.role).toBe("reviewer");
-    expect(channelMessages.at(-1)).toContain("Coordinator report — completed");
+    expect(channelMessages.at(-1)).toBe("The project is implemented and verified.");
+    expect(run.synthesisUsage).toEqual({ input: 20, output: 10 });
+    expect(run.reviewStatus).toBe("approved");
+    expect(run.report).toContain("Coordinator report — completed");
   });
 
   it("treats a mention as a task-assignment constraint", async () => {

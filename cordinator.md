@@ -3,6 +3,10 @@
 更新时间：2026-09-02  
 状态：已实现
 
+2026-09-04 更新：Channel 内每个 Bot 使用独立持久会话，回复及审批直接呈现在
+Channel；最终交付按“答案 → 支持文件 → 折叠执行详情”排序，执行完成与评审通过
+分别记录。实现边界与验证说明见 [Channel conversations](docs/channel-conversations.md)。
+
 ## 1. 产品定位
 
 Coordinator 是 Roundtable 的系统级多 Agent 协调控制面，不是某个 Bot、Persona、

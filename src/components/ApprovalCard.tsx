@@ -5,7 +5,7 @@
 // and the actual command/path in monospace, and the choices carry their
 // own behavior instead of being matched by their label text.
 import { Check, ShieldCheck, X } from "lucide-react";
-import { type Bot, type Message } from "@/state/store";
+import { useStore, type Bot, type Message } from "@/state/store";
 import { cn } from "@/lib/cn";
 
 interface ToolLabels {
@@ -31,11 +31,14 @@ function toolLabel(tool?: string): string {
 export function ApprovalCard({
   bot,
   message,
+  threadId,
 }: {
   /** who is asking, for the "Name wants to …" line */
   bot?: Bot;
   message: Message;
+  threadId?: string;
 }) {
+  const { dispatch } = useStore();
   const card = message.card;
   if (!card) return null;
   const settled = card.answered;
@@ -83,6 +86,13 @@ export function ApprovalCard({
           </>
         )}
       </div>
+      {threadId && !settled && !card.dismissed && card.requestId && <div className="mt-3 flex justify-end gap-2">
+        {(["deny", "allow"] as const).map((behavior) => <button key={behavior}
+          onClick={() => dispatch({ type: "decideRequest", threadId, sourceThreadId: message.source?.threadId, requestId: card.requestId!, behavior })}
+          className="rounded-lg border border-hairline/50 px-3 py-1.5 text-[13px] hover:bg-raised">
+          {behavior === "allow" ? "Allow once" : "Deny"}
+        </button>)}
+      </div>}
     </div>
   );
 }

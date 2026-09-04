@@ -98,6 +98,7 @@ export function PendingApprovalActions({
     dispatch({
       type: "decideRequest",
       threadId,
+      sourceThreadId: pending.message.source?.threadId,
       requestId: pending.requestId,
       behavior,
       message: behavior === "deny" ? "Denied by the user." : undefined,

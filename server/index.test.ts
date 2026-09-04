@@ -231,6 +231,7 @@ beforeAll(async () => {
       OMB_COMPOSIO_API: `http://127.0.0.1:${boxStubPort}/api/v3.1`,
       OMB_STATIC_DIR: staticDir,
       FAKE_CLAUDE_MODE: "hang",
+      FAKE_CLAUDE_CHANNEL_FIXTURE: "1",
       FAKE_CLAUDE_PLANNING_GOAL: "DUO_GUARD_FIXTURE",
       FAKE_CLAUDE_PLANNING_REPLY: JSON.stringify([{ title: "Inspect", description: "Inspect the assigned scope", role: "developer" }]),
       FAKE_CLAUDE_DUMP: fakeClaudeDump,
@@ -1535,6 +1536,54 @@ describe("harness HTTP API", () => {
     await api("PATCH", "/api/config", { features: { skillRecorder: false } });
   });
 
+  it("delivers concurrent Channel replies, routes approvals by session, and reuses sessions on follow-up", async () => {
+    const botIds: string[] = [];
+    let room: any;
+    try {
+      for (const name of ["Channel Researcher", "Channel Critic"]) {
+        const bot = (await api("POST", "/api/bots", {})).body.bot;
+        botIds.push(bot.id);
+        await api("PATCH", `/api/bots/${bot.id}`, { name, autoApprove: false, modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } });
+      }
+      room = (await api("POST", "/api/groups", { name: "Channel session test", memberIds: botIds })).body.group;
+      await api("PATCH", `/api/groups/${room.id}/setup`, { action: "skip" });
+      const channel = async () => (await api("GET", "/api/bots")).body.groups.find((g: any) => g.id === room.id);
+      const pending = (g: any) => g.messages.filter((m: any) => m.card?.requestId && !m.card.answered && !m.card.dismissed);
+      expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "CHANNEL_SESSION_FIXTURE evaluate the project" })).status).toBe(202);
+      await expect.poll(async () => pending(await channel()).length, { timeout: 15_000 }).toBe(2);
+      const initial = await channel();
+      const requests = pending(initial);
+      expect(new Set(requests.map((m: any) => m.source.threadId)).size).toBe(2);
+      expect(new Set(requests.map((m: any) => m.from.botId))).toEqual(new Set(botIds));
+      expect((await api("POST", `/api/threads/${room.threadId}/respond`, { requestId: requests[0].card.requestId, behavior: "allow" })).status).toBe(409);
+      expect((await api("POST", `/api/threads/${room.threadId}/respond`, { requestId: requests[0].card.requestId, sourceThreadId: requests[0].source.threadId, behavior: "allow" })).status).toBe(200);
+      await expect.poll(async () => pending(await channel()).length).toBe(1);
+      expect(pending(await channel())[0].source.threadId).toBe(requests[1].source.threadId);
+      for (const id of botIds) await api("PATCH", `/api/bots/${id}`, { autoApprove: true });
+      await api("POST", `/api/threads/${room.threadId}/respond`, { requestId: requests[1].card.requestId, sourceThreadId: requests[1].source.threadId, behavior: "allow" });
+      await expect.poll(async () => (await api("GET", `/api/groups/${room.id}/coordination`)).body.run?.status, { timeout: 15_000 }).toBe("completed");
+      const first = await channel();
+      const delivered = first.messages.findLast((m: any) => m.executionReport);
+      expect(delivered.text).toBe("The project recommendation is to compare keyframes before adding a VLM.");
+      expect(delivered.text).not.toContain("checking");
+      expect(delivered.artifacts.length).toBeGreaterThan(0);
+      const artifact = delivered.artifacts[0];
+      const file = await api("GET", `/api/groups/${room.id}/artifacts?${new URLSearchParams({ threadId: artifact.threadId, path: artifact.path })}`);
+      expect(file.status).toBe(200);
+      expect(file.body.text).toContain("Compare historical keyframes first");
+      const sessions = first.memberSessions;
+      expect(Object.keys(sessions)).toHaveLength(2);
+      expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "CHANNEL_SESSION_FIXTURE summarize the same project" })).status).toBe(202);
+      await expect.poll(async () => (await api("GET", `/api/groups/${room.id}/coordination`)).body.run?.status, { timeout: 15_000 }).toBe("completed");
+      const second = await channel();
+      expect(second.memberSessions).toEqual(sessions);
+      expect(pending(second)).toHaveLength(0); // attended Auto mode handled the next requests
+    } finally {
+      if (room) { await settleCoordination(room.id); await api("DELETE", `/api/groups/${room.id}`); }
+      for (const id of botIds) await api("DELETE", `/api/bots/${id}`);
+    }
+  }, 45_000);
+
   it("prevents coordinated workers from starting untracked peer turns outside the Duo limit", async () => {
     const botId = (await api("POST", "/api/bots", {})).body.bot.id;
     const peerId = (await api("POST", "/api/bots", {})).body.bot.id;
@@ -1586,9 +1635,9 @@ describe("harness HTTP API", () => {
       expect(selected.status).toBe(200);
 
       rmSync(fakeClaudeDump, { force: true });
-      const sent = await api("POST", `/api/groups/${room.id}/messages`, { text: "stay active" });
+      const sent = await api("POST", `/api/groups/${room.id}/messages`, { text: "DUO_GUARD_FIXTURE stay active" });
       expect(sent.status).toBe(202);
-      await expect.poll(() => existsSync(fakeClaudeDump), { timeout: 5_000 }).toBe(true);
+      await expect.poll(async () => Boolean((await api("GET", "/api/bots")).body.bots.find((bot: { id: string }) => bot.id === botId)?.busy), { timeout: 5_000 }).toBe(true);
 
       const before = (await api("GET", "/api/bots")).body;
       expect(before.bots.find((bot: { id: string }) => bot.id === botId)?.busy).toBe(true);

@@ -28,7 +28,7 @@ function elapsed(run: CoordinationRun): string {
 }
 
 export function CoordinatorMissionControl({ group }: { group: Group }) {
-  const { dispatch } = useStore();
+  const { state, dispatch } = useStore();
   const [expanded, setExpanded] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -77,7 +77,11 @@ export function CoordinatorMissionControl({ group }: { group: Group }) {
   }
 
   const active = ["planning", "validating", "running", "paused", "reviewing"].includes(run.status);
+  const needsInput = (task: CoordinationTask) => task.status === "running" && !!task.threadId
+    && state.bots.some((bot) => bot.id === task.botId && bot.activity === "waiting-on-you");
+  const waitingTasks = run.tasks.filter(needsInput);
   const taskLabel = (task: CoordinationTask) => {
+    if (needsInput(task)) return "Needs your input in Channel";
     if (task.status === "pending") return "Waiting for dependencies";
     if (task.status === "ready") return run.status === "paused" ? "Paused" : "Waiting for a slot";
     if (task.status === "running" && !task.threadId) return "Waiting for Bot / starting";
@@ -101,6 +105,13 @@ export function CoordinatorMissionControl({ group }: { group: Group }) {
         </div>
 
         {expanded && <>
+          {run.reviewStatus && <div className="border-b border-hairline/40 px-3 py-2 text-[12px]">
+            Execution: {run.status === "completed" ? "finished" : run.status} · Review: {run.reviewStatus.replaceAll("_", " ")}
+          </div>}
+          {waitingTasks.length > 0 && <div role="status" className="border-b border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[12px] text-ink">
+            <div>Waiting for your input. Answer the approval requests or questions in this Channel.</div>
+            <div className="mt-1 flex flex-wrap gap-2">{waitingTasks.map((task) => <button key={task.id} onClick={() => void openTask(task)} className="rounded border border-amber-500/40 px-2 py-1 hover:bg-amber-500/10">Open {task.botName} task <ExternalLink size={11} className="inline" /></button>)}</div>
+          </div>}
           <div className="grid gap-px border-b border-hairline/40 bg-hairline/30 sm:grid-cols-2">
             <div className="bg-card px-3 py-2"><div className="text-[9.5px] font-semibold uppercase tracking-wider text-ink-secondary">Coordinator model</div><div className="truncate text-[12px] text-ink">{run.coordinatorSnapshot.actualModel?.model ?? run.coordinatorSnapshot.requestedModel.model}</div><div className="truncate text-[10.5px] text-ink-secondary">{run.coordinatorSnapshot.actualModel?.instanceId ?? run.coordinatorSnapshot.requestedModel.instanceId} · {run.coordinatorSnapshot.promptVersion}</div></div>
             <div className="bg-card px-3 py-2"><div className="text-[9.5px] font-semibold uppercase tracking-wider text-ink-secondary">Execution</div><div className="truncate text-[12px] text-ink">{run.tasks.filter((task) => task.status === "running").length}/{run.policySnapshot.maxConcurrency} slots in use · {run.policySnapshot.maxFixCycles} fix cycles</div><div className="truncate text-[10.5px] text-ink-secondary">Independent tasks overlap; dependencies wait</div></div>
@@ -128,7 +139,7 @@ export function CoordinatorMissionControl({ group }: { group: Group }) {
               {layout.nodes.map(({ task, x, y }) => <button key={task.id} type="button" disabled={!task.threadId} onClick={() => void openTask(task)} title={`${taskLabel(task)} — ${task.description}`} className={cn("absolute rounded-xl border p-2.5 text-left transition hover:brightness-110 disabled:cursor-default", STATUS_STYLE[task.status])} style={{ left: x, top: y, width: DAG_CARD_WIDTH, height: DAG_CARD_HEIGHT }}>
                 <div className="flex items-center gap-1.5"><span className={cn("size-2 shrink-0 rounded-full", STATUS_DOT[task.status])} /><span className="truncate text-[10px] font-semibold uppercase tracking-wide text-ink-secondary">{task.role} · {task.botName}</span>{task.threadId && <ExternalLink size={10} className="ml-auto shrink-0 text-ink-secondary" />}</div>
                 <div className="mt-1 line-clamp-2 text-[12px] font-medium leading-snug text-ink">{task.title}</div>
-                <div className="mt-1 text-[10px] text-ink-secondary">{taskLabel(task)}</div>
+                <div className={cn("mt-1 text-[10px]", needsInput(task) ? "font-semibold text-amber-600 dark:text-amber-400" : "text-ink-secondary")}>{taskLabel(task)}</div>
                 {task.fixCycle && <span className="absolute bottom-1.5 right-2 text-[9px] text-amber-500">fix {task.fixCycle}</span>}
               </button>)}
             </div>}

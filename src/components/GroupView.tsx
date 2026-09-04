@@ -27,6 +27,8 @@ import { ReactionBar, ReactionChips } from "./Reactions";
 import { ApprovalCard } from "./ApprovalCard";
 import { ManageMembersPanel } from "./ManageMembersPanel";
 import { CoordinatorMissionControl } from "./CoordinatorMissionControl";
+import { ChannelDelivery } from "./ChannelDelivery";
+import { ChannelQuestion } from "./ChannelQuestion";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { cn } from "@/lib/cn";
 import { useFocusMessage } from "@/lib/focus-message";
@@ -135,13 +137,15 @@ const Transcript = memo(function Transcript({
           // only accepts an "answer", so routing it here would offer an
           // Allow the broker rejects
           m.kind === "secret" && m.secret && m.from?.botId ? (
-            <SecretRequestCard botId={m.from.botId} threadId={group.threadId} message={m} />
+            <SecretRequestCard botId={m.from.botId} threadId={m.source?.threadId ?? group.threadId} message={m.source ? { ...m, id: m.source.messageId } : m} />
           ) : m.kind === "connector" && m.connector && m.from?.botId ? (
-            <ConnectorCard botId={m.from.botId} threadId={group.threadId} message={m} />
+            <ConnectorCard botId={m.from.botId} threadId={m.source?.threadId ?? group.threadId} message={m.source ? { ...m, id: m.source.messageId } : m} />
           ) : m.kind === "options" && m.card?.requestId && m.card.tool ? (
             <div className="flex justify-start">
-              <ApprovalCard bot={memberOf(m.from?.botId)} message={m} />
+              <ApprovalCard bot={memberOf(m.from?.botId)} message={m} threadId={group.threadId} />
             </div>
+          ) : m.kind === "options" && m.card?.requestId ? (
+            <ChannelQuestion threadId={group.threadId} message={m} />
           ) : m.kind === "activity" && m.tool ? (
             <div className="flex justify-start">
               <div
@@ -196,7 +200,7 @@ const Transcript = memo(function Transcript({
                       )}
                       {attachedImages?.display ?? m.text}
                     </>
-                  ) : <ChatMarkdown text={m.text} />}
+                  ) : <><ChatMarkdown text={m.text} /><ChannelDelivery groupId={group.id} message={m} /></>}
                 </div>
                 {!user && <ReactionBar threadId={group.threadId} message={m} />}
                 <span className="self-end pb-1 text-[11px] tabular-nums text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100">
@@ -513,6 +517,12 @@ export function GroupView({ group }: { group: Group }) {
   const { state, dispatch } = useStore();
   const stream = useStreaming();
   const streaming = stream.streaming[group.threadId];
+  const channelStreams = Object.entries(group.memberSessions ?? {}).flatMap(([botId, threadId]) => {
+    const bot = state.bots.find((member) => member.id === botId);
+    const text = stream.streaming[threadId];
+    return bot && group.memberIds.includes(botId) && text ? [{ bot, threadId, text }] : [];
+  });
+  const channelStreamText = channelStreams.map((entry) => entry.text).join("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const [follow, setFollow] = useState(true);
   const followRef = useRef(true);
@@ -604,7 +614,7 @@ export function GroupView({ group }: { group: Group }) {
     if (!el || !followRef.current) return;
     el.scrollTo({ top: el.scrollHeight });
     previousScrollTop.current = el.scrollTop;
-  }, [group.id, group.messages.length, streaming, group.busyBotId, follow]);
+  }, [group.id, group.messages.length, streaming, channelStreamText, group.busyBotId, follow]);
 
   // Expanding prepends rows: capture the height first, then after the commit
   // shift scrollTop by the growth so the message under the cursor stays put
@@ -905,6 +915,10 @@ export function GroupView({ group }: { group: Group }) {
               <StreamingBubble text={streaming} />
             </>
           )}
+          {channelStreams.map(({ bot, threadId, text }) => <div key={threadId} aria-label={`${bot.name} reply`}>
+            <ClusterLabel bot={bot} name={bot.name} color={bot.color} />
+            <StreamingBubble text={text} />
+          </div>)}
         </div>
         )}
       </div>

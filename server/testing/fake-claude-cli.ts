@@ -18,6 +18,8 @@
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
 import { readFileSync, writeFileSync } from "node:fs";
+import { createConnection } from "node:net";
+import { join } from "node:path";
 
 const mode = process.env.FAKE_CLAUDE_MODE ?? "happy";
 
@@ -145,6 +147,35 @@ const playTurn = (prompt: JsonValue) => {
     out({ type: "result", is_error: false, stop_reason: "end_turn", usage: { input_tokens: 10, output_tokens: 5 } });
     turnRunning = false;
     finishIfDone();
+    return;
+  }
+
+  if (process.env.FAKE_CLAUDE_CHANNEL_FIXTURE === "1" && promptText(prompt).includes("CHANNEL_SESSION_FIXTURE")) {
+    const finishChannel = (text: string) => {
+      out({ type: "assistant", message: { content: [{ type: "text", text }] } });
+      out({ type: "result", is_error: false, stop_reason: "end_turn", usage: { input_tokens: 10, output_tokens: 5 } });
+      turnRunning = false;
+      finishIfDone();
+    };
+    if (argv.some((arg) => arg.includes("Roundtable Coordinator Intelligence"))) {
+      const context = JSON.parse(promptText(prompt).split("<runtime_context>\n")[1]!.split("\n</runtime_context>")[0]!);
+      finishChannel(JSON.stringify(context.availableBots.slice(0, 2).map((bot: { id: string }, i: number) => ({ id: `finding-${i}`, title: `Findings ${i}`, role: "architect", botId: bot.id, description: "Answer CHANNEL_SESSION_FIXTURE with evidence" }))));
+    } else if (argv.some((arg) => arg.includes("response synthesizer"))) {
+      finishChannel("The project recommendation is to compare keyframes before adding a VLM.");
+    } else {
+      out({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "Inspecting channel evidence" } } });
+      out({ type: "assistant", message: { content: [{ type: "text", text: "I am checking the evidence." }] } });
+      const mcp = JSON.parse(readFileSync(argAfter("--mcp-config")!, "utf8"));
+      const socket = createConnection(mcp.mcpServers.ogb.args.at(-1));
+      socket.on("connect", () => socket.write(JSON.stringify({ t: "ask", id: "shared-fixture-request", kind: "permission", tool: "Read", input: { file_path: "channel-evidence.md" } }) + "\n"));
+      socket.once("data", () => {
+        socket.end();
+        const file = join(process.cwd(), "channel-evidence.md");
+        writeFileSync(file, "# Channel evidence\nCompare historical keyframes first.\n");
+        finishChannel(`Compare historical keyframes first. Supporting file: ${file}\nVERDICT: APPROVED`);
+      });
+      socket.on("error", (error) => { process.stderr.write(String(error)); process.exit(1); });
+    }
     return;
   }
 

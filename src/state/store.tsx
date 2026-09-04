@@ -68,6 +68,9 @@ export interface SecretRequestCardData {
 }
 
 export interface Message {
+  source?: { threadId: string; messageId: string };
+  executionReport?: string;
+  artifacts?: Array<{ label: string; path: string; threadId: string }>;
   id: string;
   role: "bot" | "user";
   kind: "text" | "options" | "activity" | "screen" | "connector" | "secret";
@@ -129,6 +132,8 @@ export interface CoordinationTask {
 }
 
 export interface CoordinationRun {
+  answer?: string;
+  reviewStatus?: "not_required" | "approved" | "changes_requested" | "unresolved";
   id: string;
   groupId: string;
   goal: string;
@@ -179,6 +184,7 @@ export interface CoordinationRun {
 
 /** A room: several bots + you in one shared thread. */
 export interface Group {
+  memberSessions?: Record<string, string>;
   id: string;
   threadId: string;
   name: string;
@@ -523,6 +529,7 @@ export type Action =
   | {
       type: "decideRequest";
       threadId: string;
+      sourceThreadId?: string;
       requestId: string;
       behavior: "allow" | "deny" | "answer";
       message?: string;
@@ -1294,6 +1301,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               method: "POST",
               body: JSON.stringify({
                 requestId: action.requestId,
+                sourceThreadId: action.sourceThreadId,
                 behavior: action.behavior,
                 message: action.message,
               }),

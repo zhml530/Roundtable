@@ -79,6 +79,10 @@ export interface SecretRequestCardData {
 }
 
 export interface Message {
+  /** Origin of a Channel projection; approvals always resolve on this session. */
+  source?: { threadId: string; messageId: string };
+  executionReport?: string;
+  artifacts?: Array<{ label: string; path: string; threadId: string }>;
   id: string;
   role: "bot" | "user";
   kind: "text" | "options" | "activity" | "screen" | "connector" | "secret";
@@ -128,6 +132,7 @@ export interface Message {
  * channels are owned by the system Coordinator; `dm` rooms keep their private
  * peer/last-speaker routing. The bulletin is shared context for every task. */
 export interface GroupRecord {
+  memberSessions?: Record<string, string>;
   id: string;
   threadId: ThreadId;
   name: string;
@@ -545,6 +550,17 @@ export class Store {
       const legacyFile = messagesFile(threadId);
       if (existsSync(legacyFile)) mdb.readThread(threadId, legacyFile);
     }
+    // Provider requests cannot survive a process restart. Preserve the session
+    // cursors, but retire its stale cards in both the session and the Channel.
+    for (const group of this.groups) {
+      for (const threadId of Object.values(group.memberSessions ?? {})) {
+        for (const message of this.messagesFor(threadId)) {
+          if (message.card?.requestId && !message.card.answered && !message.card.dismissed) {
+            this.patchMessage(threadId, message.id, { card: { ...message.card, answered: "unavailable", dismissed: true } });
+          }
+        }
+      }
+    }
   }
 
   private saveBots() {
@@ -581,6 +597,48 @@ export class Store {
     return this.groups.find((g) => g.threadId === threadId);
   }
 
+  channelSession(threadId: string): { group: GroupRecord; bot: BotRecord } | undefined {
+    for (const group of this.groups) {
+      if (group.dm) continue;
+      const botId = Object.keys(group.memberSessions ?? {}).find((id) => group.memberSessions![id] === threadId && group.memberIds.includes(id));
+      const bot = botId ? this.bot(botId) : null;
+      if (bot && this.taskByThread(bot.id, threadId)) return { group, bot };
+    }
+  }
+
+  /** Reuse one provider conversation per Channel/Bot, never the direct chat. */
+  ensureChannelSession(groupId: string, botId: string, adoptThreadId?: string): TaskRecord | null {
+    const group = this.group(groupId);
+    if (!group || group.dm || !group.memberIds.includes(botId)) return null;
+    const existing = group.memberSessions?.[botId];
+    const task = existing ? this.taskByThread(botId, existing) : undefined;
+    if (task) return task;
+    const adoptable = adoptThreadId && !this.groups.some((other) => Object.values(other.memberSessions ?? {}).includes(adoptThreadId))
+      ? this.taskByThread(botId, adoptThreadId) : undefined;
+    const created = adoptable ?? this.createTask(botId, `Channel: ${group.name}`, false);
+    if (!created) return null;
+    group.pinnedCwd ??= group.cwd ?? null;
+    if (group.pinnedCwd && created.cwd === undefined && !Object.keys(created.resumeCursors).length) {
+      created.cwd = group.pinnedCwd;
+      this.saveBots();
+    }
+    group.memberSessions = { ...group.memberSessions, [botId]: created.threadId };
+    this.saveGroups();
+    this.emit({ type: "group", groupId });
+    return created;
+  }
+
+  private projectChannelMessage(threadId: string, message: Message): void {
+    const session = this.channelSession(threadId);
+    if (!session || message.role !== "bot" || message.source) return;
+    const { group, bot } = session;
+    const existing = this.messagesFor(group.threadId).find((m) => m.source?.threadId === threadId && m.source.messageId === message.id);
+    const { id, parentId: _parent, ...body } = message;
+    const projected = { ...body, from: { botId: bot.id, name: bot.name, color: bot.color }, source: { threadId, messageId: id } };
+    if (existing) this.patchMessage(group.threadId, existing.id, projected);
+    else this.appendMessage(group.threadId, projected);
+  }
+
   createGroup(name: string, memberIds: string[], dm = false, section?: string): GroupRecord {
     const group: GroupRecord = {
       id: newId(),
@@ -612,6 +670,9 @@ export class Store {
     const group = this.group(id);
     if (!group) return null;
     Object.assign(group, patch);
+    if (patch.memberIds && group.memberSessions) {
+      group.memberSessions = Object.fromEntries(Object.entries(group.memberSessions).filter(([botId]) => group.memberIds.includes(botId)));
+    }
     this.saveGroups();
     this.emit({ type: "group", groupId: group.id });
     return group;
@@ -701,6 +762,7 @@ export class Store {
       }
     }
     this.emit({ type: "message", threadId, message: full });
+    this.projectChannelMessage(threadId, full);
     // The first-run quiz is not a live ask. Talking past it hides it so the
     // transcript is just the greeting plus what they said. Cards with a
     // requestId are permission/question prompts and stay until answered.
@@ -785,6 +847,7 @@ export class Store {
     t.messages[idx] = { ...t.messages[idx], ...patch, card: patch.card ?? t.messages[idx].card };
     mdb.updateMessage(threadId, t.messages[idx]);
     this.emit({ type: "message.patch", threadId, message: t.messages[idx] });
+    this.projectChannelMessage(threadId, t.messages[idx]);
     return t.messages[idx];
   }
 
