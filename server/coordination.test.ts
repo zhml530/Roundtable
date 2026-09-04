@@ -40,6 +40,37 @@ const policy = () => ({
 });
 
 describe("Coordinator domain", () => {
+  it("plans and executes using the Channel's specialist profiles", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "channel-profiles-")); dirs.push(dir);
+    const crew: CoordinationBot[] = [
+      { id: "research", name: "Rin", title: "Researcher", description: "Collect published evidence. " + "Evidence context. ".repeat(40) + "Preserve uncertainty.", model: "m" },
+      { id: "critic", name: "Cam", title: "Critic", description: "Challenge assumptions and evidence quality.", model: "m" },
+    ];
+    const prompts: string[] = [];
+    let planning = "";
+    const manager = new CoordinationManager({
+      file: join(dir, "runs.json"), groupBots: () => crew, coordinatorPolicy: policy,
+      runCoordinatorTurn: async ({ prompt }) => {
+        planning = prompt;
+        return { text: JSON.stringify([
+          { title: "Find evidence", description: "Assess published evidence", role: "Researcher", botId: "research" },
+          { title: "Assess findings", description: "Challenge assumptions and summarize the conclusion", role: "Critic", botId: "critic", dependsOn: ["Find evidence"] },
+        ]) };
+      },
+      createTask: (id) => ({ threadId: id }),
+      runBotTurn: async ({ prompt }) => { prompts.push(prompt); return { text: "Evidence supports a limited feasibility conclusion." }; },
+    });
+    const run = await manager.start("room", "Evaluate VLM feasibility");
+    await vi.waitFor(() => expect(run.status).toBe("completed"));
+    expect(planning).toContain('"title":"Researcher"');
+    expect(planning).toContain("Preserve uncertainty.");
+    expect(run.tasks.map((task) => [task.role, task.botId])).toEqual([["Researcher", "research"], ["Critic", "critic"]]);
+    expect(prompts[0]).toContain("Collect published evidence.");
+    expect(prompts[1]).toContain("Challenge assumptions and evidence quality.");
+    expect(prompts.join("\n")).not.toContain("Own architecture and decomposition");
+    expect(run.reviewStatus).toBe("not_required");
+  });
+
   it("keeps research and summaries out of automatic implementation loops", () => {
     expect(implementationRequested("Evaluate VLM feasibility and propose an evaluation plan")).toBe(false);
     expect(implementationRequested("I need the summary, don't implement anything")).toBe(false);

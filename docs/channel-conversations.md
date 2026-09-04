@@ -6,6 +6,13 @@ sessions in other Channels. DAG tasks are assignments within that session, not
 new conversations. Up to two independent tasks run concurrently; turns belonging
 to the same Bot remain serialized.
 
+Planning uses the Channel roster's Bot IDs, names, titles, and full descriptions.
+Task roles can describe any specialization, including Researcher and Critic;
+execution uses the selected Bot's profile. Ordinary analysis does not acquire an
+automatic final review task. The `reviewer` task role denotes an explicit verdict
+gate, and high-risk review policy remains enforced. Legacy role-only proposals
+require a matching Channel profile; unknown specializations must supply a Bot ID.
+
 ```mermaid
 flowchart LR
     User --> Channel

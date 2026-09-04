@@ -108,7 +108,7 @@ export interface Message {
   queueId?: string;
 }
 
-export type CoordinationRole = "architect" | "developer" | "tester" | "reviewer";
+export type CoordinationRole = string;
 export type CoordinationRunStatus = "planning" | "validating" | "planning_blocked" | "running" | "paused" | "reviewing" | "completed" | "failed" | "cancelled";
 export type CoordinationTaskStatus = "pending" | "ready" | "running" | "completed" | "failed" | "blocked" | "cancelled";
 
