@@ -64,7 +64,7 @@ export function applySkin(id: SkinId): void {
   document.documentElement.dataset.skin = id;
   const styles = getComputedStyle(document.documentElement);
   window.ogb?.setTitleBarTheme?.({
-    background: styles.getPropertyValue("--color-app").trim(),
+    background: styles.getPropertyValue("--color-chat-background").trim() || styles.getPropertyValue("--color-app").trim(),
     symbols: styles.getPropertyValue("--color-ink").trim(),
   });
   try {

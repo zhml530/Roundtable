@@ -159,7 +159,7 @@ const Transcript = memo(function Transcript({
             </div>
           ) : m.kind === "text" && m.text ? (
             <div className={cn("group flex w-full flex-col", user ? "items-end" : "items-start")}>
-              <div className={cn("flex w-full items-end gap-1.5", user ? "justify-end" : "justify-start")}>
+              <div className={cn("flex w-full items-end gap-1.5", user ? "justify-end" : "flex-wrap justify-start")}>
                 {user && <ReactionBar threadId={group.threadId} message={m} />}
                 <button
                   type="button"
@@ -173,8 +173,8 @@ const Transcript = memo(function Transcript({
                 <PinToggle group={group} message={m} />
                 <div
                   className={cn(
-                    "max-w-[70%] rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed",
-                    user ? "whitespace-pre-wrap bg-bubble-user text-ink" : "bg-card text-ink",
+                    "rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed",
+                    user ? "max-w-[70%] whitespace-pre-wrap bg-bubble-user text-ink" : "order-first w-full min-w-0 bg-card text-ink",
                   )}
                   title={new Date(m.at).toLocaleString()}
                 >
@@ -233,7 +233,7 @@ function StreamingBubble({ text }: { text: string }) {
   const deferred = useDeferredValue(text);
   return (
     <div className="flex w-full justify-start">
-      <div className="max-w-[70%] rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed text-ink">
+      <div className="w-full min-w-0 rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed text-ink">
         <ChatMarkdown text={deferred} streaming />
         <span className="animate-caret ml-0.5 inline-block h-[14px] w-[2px] bg-ink align-middle" />
       </div>

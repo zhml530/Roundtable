@@ -227,6 +227,7 @@
      teal at a glance. Raised surfaces stay pure white as the contrast anchor —
      tinting those too turns the whole thing to soup. */
   --color-app: #dfeceb;
+  --color-chat-background: #ffffff;
   --color-panel: #ecf4f3;
   --color-raised: #ffffff;
   --color-raised-hover: #cfe4e1;
@@ -266,7 +267,7 @@
 
 /* Neutral reading surfaces, with Lagoon's teal retained in the app chrome. */
 [data-skin="lagoon"] .chat-area {
-  --color-app: #ffffff;
+  --color-app: var(--color-chat-background);
   --color-inset: #f5f5f5;
   --color-bubble-user: #f0f0f0;
 }
