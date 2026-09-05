@@ -777,6 +777,32 @@ describe("harness HTTP API", () => {
     expect(cleared.body.bot.avatarCrop).toBe("mascot");
   });
 
+  it("persists only app-owned Coordinator avatars and supported crop shapes", async () => {
+    const avatarUrl = await uploadAvatar("image/webp");
+
+    const saved = await api("PATCH", "/api/config", {
+      coordinator: { avatarUrl, avatarCrop: "rounded" },
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.body.coordinator).toMatchObject({ avatarUrl, avatarCrop: "rounded" });
+
+    expect((await api("PATCH", "/api/config", {
+      coordinator: { avatarUrl: "https://tracker.example/avatar.png" },
+    })).status).toBe(400);
+    expect((await api("PATCH", "/api/config", {
+      coordinator: { avatarUrl: "/api/attachments/123e4567-e89b-12d3-a456-426614174000.webp" },
+    })).status).toBe(400);
+    expect((await api("PATCH", "/api/config", {
+      coordinator: { avatarCrop: "hexagon" },
+    })).status).toBe(400);
+
+    const cleared = await api("PATCH", "/api/config", {
+      coordinator: { avatarUrl: null, avatarCrop: "circle" },
+    });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.coordinator).toMatchObject({ avatarUrl: null, avatarCrop: "circle" });
+  });
+
   it("limits paired profile writes to validated profile fields and broadcasts the result", async () => {
     const created = await api("POST", "/api/bots");
     const bot = created.body.bot;
@@ -1564,6 +1590,7 @@ describe("harness HTTP API", () => {
       await expect.poll(async () => (await api("GET", `/api/groups/${room.id}/coordination`)).body.run?.status, { timeout: 15_000 }).toBe("completed");
       const first = await channel();
       const delivered = first.messages.findLast((m: any) => m.executionReport);
+      expect(delivered.author).toBe("coordinator");
       expect(delivered.text).toBe("The project recommendation is to compare keyframes before adding a VLM.");
       expect(delivered.text).not.toContain("checking");
       expect(delivered.artifacts.length).toBeGreaterThan(0);

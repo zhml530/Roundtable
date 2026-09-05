@@ -8,6 +8,7 @@ import { z } from "zod";
 
 import { writeFileAtomic } from "./atomic.ts";
 import { EFFORT_LEVELS, type InstanceConfigMap, type ModelSelection } from "./contracts.ts";
+import { botAvatarUrlSchema, coordinatorAvatarCropSchema, type CoordinatorAvatarCrop } from "../shared/bot-avatar.ts";
 import { parseJson, schemaIssue, type JsonObject, type JsonValue } from "./schema.ts";
 
 const optionalText = z.string().optional();
@@ -32,6 +33,8 @@ const modelSelectionSchema = z.object({
   effort: z.enum(EFFORT_LEVELS).optional(),
 });
 const coordinatorConfigSchema = z.object({
+  avatarUrl: botAvatarUrlSchema.nullable().optional(),
+  avatarCrop: coordinatorAvatarCropSchema.default("circle"),
   primary: modelSelectionSchema.optional(),
   backup: modelSelectionSchema.optional(),
   failureMode: z.enum(["pause", "fallback"]).default("pause"),
@@ -91,6 +94,8 @@ export interface AppConfig {
   /** Opt-in product experiments. Every flag defaults to disabled. */
   features?: { skillRecorder?: boolean };
   coordinator?: {
+    avatarUrl?: string | null;
+    avatarCrop: CoordinatorAvatarCrop;
     primary?: ModelSelection;
     backup?: ModelSelection;
     failureMode: "pause" | "fallback";
@@ -131,6 +136,8 @@ export function skillRecorderEnabled(cfg: AppConfig): boolean {
 }
 
 export const DEFAULT_COORDINATOR_CONFIG: NonNullable<AppConfig["coordinator"]> = {
+  avatarUrl: null,
+  avatarCrop: "circle",
   failureMode: "pause",
   preset: "balanced",
   planningTimeoutMs: 120_000,

@@ -16,6 +16,7 @@ import {
 import type { CloudBackend, EffortLevel } from "../../server/contracts.ts";
 import type { MausColor, MausMotion } from "@/lib/mascot";
 import type { BotAvatarCrop } from "../../shared/bot-avatar";
+import type { CoordinatorAvatarCrop } from "../../shared/bot-avatar";
 import type { Routine, RoutineInput, RoutineRun } from "@/lib/routines";
 import type { WebhookAttempt, WebhookIngressStatus, WebhookTrigger } from "@/lib/webhooks";
 import { currentCall } from "@/lib/call";
@@ -68,6 +69,8 @@ export interface SecretRequestCardData {
 }
 
 export interface Message {
+  /** System-authored Channel delivery. Kept separate from Bot attribution. */
+  author?: "coordinator";
   source?: { threadId: string; messageId: string };
   executionReport?: string;
   artifacts?: Array<{ label: string; path: string; threadId: string }>;
@@ -340,6 +343,8 @@ export interface ConfigStatus {
 }
 
 export interface CoordinatorSettings {
+  avatarUrl?: string | null;
+  avatarCrop: CoordinatorAvatarCrop;
   primary?: ModelSelection;
   backup?: ModelSelection;
   failureMode: "pause" | "fallback";

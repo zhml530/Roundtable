@@ -13,6 +13,7 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { Sparkles } from "lucide-react";
 import { orchestrationResourceUrl } from "@/lib/orchestration";
 import { MAUS_COLORS, type MausColor, type MausMotion, type MausState } from "@/lib/mascot";
 import {
@@ -21,7 +22,7 @@ import {
   type CursorAvatarHandle,
   type CursorSilhouette,
 } from "./CursorAvatar";
-import { botAvatarProfile, type BotAvatarCrop } from "../../shared/bot-avatar";
+import { botAvatarProfile, type BotAvatarCrop, type CoordinatorAvatarCrop } from "../../shared/bot-avatar";
 
 /**
  * The pack's baked-in silhouette was exported with the body fill hardcoded
@@ -269,6 +270,43 @@ export function BotAvatar({ bot, size = 44, label, ...mascotProps }: BotAvatarPr
       className="block shrink-0 bg-raised object-cover"
       style={{ width: size, height: size, borderRadius: radius }}
     />
+  );
+}
+
+export function CoordinatorAvatar({
+  avatarUrl,
+  avatarCrop = "circle",
+  size = 44,
+}: {
+  avatarUrl?: string | null;
+  avatarCrop?: CoordinatorAvatarCrop;
+  size?: number;
+}) {
+  const [imageFailed, setImageFailed] = useState(false);
+  useEffect(() => setImageFailed(false), [avatarUrl]);
+  const radius = avatarCrop === "circle" ? "50%" : avatarCrop === "rounded" ? "22%" : "0";
+  if (avatarUrl && !imageFailed) {
+    return (
+      <img
+        src={orchestrationResourceUrl(avatarUrl)}
+        alt="Coordinator avatar"
+        width={size}
+        height={size}
+        draggable={false}
+        onError={() => setImageFailed(true)}
+        className="block shrink-0 bg-raised object-cover"
+        style={{ width: size, height: size, borderRadius: radius }}
+      />
+    );
+  }
+  return (
+    <span
+      aria-label="Coordinator"
+      className="flex shrink-0 items-center justify-center rounded-full bg-accent/15 text-accent ring-1 ring-accent/25"
+      style={{ width: size, height: size }}
+    >
+      <Sparkles size={Math.max(14, size * 0.48)} aria-hidden="true" />
+    </span>
   );
 }
 

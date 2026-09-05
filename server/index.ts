@@ -1697,11 +1697,7 @@ coordination = new CoordinationManager({
         return cwd && task.threadId ? [{ threadId: task.threadId, cwd, output: task.output ?? "" }] : [];
       }), run.createdAt) : undefined,
     };
-    const existing = run?.tasks.length === 1 && run.status === "completed"
-      ? store.messagesFor(group.threadId).findLast((message) => message.source?.threadId === run.tasks[0]?.threadId && message.text === text)
-      : undefined;
-    if (existing) store.patchMessage(group.threadId, existing.id, delivery);
-    else store.appendMessage(group.threadId, { role: "bot", kind: "text", text, ...delivery });
+    store.appendMessage(group.threadId, { role: "bot", kind: "text", author: "coordinator", text, ...delivery });
   },
   coordinatorPolicy: () => {
     const configured = coordinatorConfig(cfg);
@@ -4445,6 +4441,9 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
       const body = await readBody(req);
       const patch = parseConfigPatch(body);
       if (!Object.keys(patch).length) return json(res, 400, { error: "nothing to save" });
+      if (patch.coordinator?.avatarUrl && !storedAvatarExists(patch.coordinator.avatarUrl)) {
+        return json(res, 400, { error: "coordinator.avatarUrl must reference an existing stored image" });
+      }
       if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
       providerConfigBusy = true;
       try {

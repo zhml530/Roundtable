@@ -85,14 +85,19 @@ describe("configuration boundaries", () => {
         maxFixCycles: 3,
         maxRunMinutes: 90,
         requireHighRiskReview: true,
+        avatarUrl: "/api/attachments/123e4567-e89b-12d3-a456-426614174000.webp",
+        avatarCrop: "rounded",
       },
     });
     expect(parsed.coordinator?.primary?.instanceId).toBe("copilot");
     expect(parsed.coordinator?.failureMode).toBe("fallback");
     expect(parsed.coordinator?.maxConcurrency).toBe(2);
+    expect(parsed.coordinator?.avatarCrop).toBe("rounded");
     expect(coordinatorConfig({ coordinator: { ...coordinatorConfig({}), maxConcurrency: 16 } }).maxConcurrency).toBe(2);
     expect(coordinatorConfig({}).planningTimeoutMs).toBe(120_000);
     expect(() => parseConfigPatch({ coordinator: { maxConcurrency: 0 } })).toThrow("coordinator.maxConcurrency");
+    expect(() => parseConfigPatch({ coordinator: { avatarUrl: "https://tracker.example/avatar.png" } })).toThrow("coordinator.avatarUrl");
+    expect(() => parseConfigPatch({ coordinator: { avatarCrop: "mascot" } })).toThrow("coordinator.avatarCrop");
   });
 
 });

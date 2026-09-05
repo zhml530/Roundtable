@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { CheckCircle2, Loader2, PlayCircle } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
+import { CheckCircle2, ImagePlus, Loader2, PlayCircle, Trash2 } from "lucide-react";
 
 import {
   api,
@@ -8,8 +8,13 @@ import {
   type ModelSelection,
 } from "@/state/store";
 import { cn } from "@/lib/cn";
+import { imageAttachmentFromFile } from "@/lib/composer-attachments";
+import { botAvatarUrlFromStoredPath, COORDINATOR_AVATAR_CROPS, type CoordinatorAvatarCrop } from "../../shared/bot-avatar";
+import { CoordinatorAvatar } from "./Avatar";
 
 const DEFAULTS: CoordinatorSettingsValue = {
+  avatarUrl: null,
+  avatarCrop: "circle",
   failureMode: "pause",
   preset: "balanced",
   planningTimeoutMs: 120_000,
@@ -25,6 +30,64 @@ const PRESETS = {
   balanced: { planningRetries: 1, maxConcurrency: 2, maxFixCycles: 2, planningTimeoutMs: 120_000 },
   economy: { planningRetries: 0, maxConcurrency: 2, maxFixCycles: 1, planningTimeoutMs: 60_000 },
 } satisfies Record<CoordinatorSettingsValue["preset"], Partial<CoordinatorSettingsValue>>;
+
+const CROP_LABEL = {
+  circle: "Circle",
+  rounded: "Rounded",
+  square: "Square",
+} satisfies Record<CoordinatorAvatarCrop, string>;
+
+function CoordinatorAppearance({
+  value,
+  saving,
+  onChange,
+}: {
+  value: CoordinatorSettingsValue;
+  saving: boolean;
+  onChange: (patch: Pick<CoordinatorSettingsValue, "avatarUrl" | "avatarCrop">) => void;
+}) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState("");
+  const upload = async (file: File | undefined) => {
+    if (!file) return;
+    setUploading(true);
+    setError("");
+    try {
+      const saved = await imageAttachmentFromFile(file);
+      if (!saved) throw new Error("Choose a PNG, JPEG, GIF, or WebP image");
+      const avatarUrl = botAvatarUrlFromStoredPath(saved.path);
+      if (!avatarUrl) throw new Error("The uploaded image could not be used as an avatar");
+      onChange({ avatarUrl, avatarCrop: value.avatarCrop });
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : String(uploadError));
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+  return (
+    <div className="rounded-xl bg-card p-4">
+      <div className="text-[15px] font-medium text-ink">Appearance</div>
+      <div className="mt-1 text-[12.5px] text-ink-secondary">Shown with Coordinator answers in every Channel. Coordinator remains a system service, not an Agent.</div>
+      <div className="mt-4 flex items-center gap-4">
+        <CoordinatorAvatar avatarUrl={value.avatarUrl} avatarCrop={value.avatarCrop} size={72} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2"><span className="text-[14px] font-medium text-ink">Coordinator</span><span className="rounded-full bg-accent/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-accent">System</span></div>
+          <div className="mt-3 flex gap-2">
+            <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp" className="sr-only" onChange={(event) => void upload(event.target.files?.[0])} />
+            <button type="button" disabled={saving || uploading} onClick={() => fileRef.current?.click()} className="flex items-center gap-1.5 rounded-lg bg-control px-3 py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50">
+              {uploading ? <Loader2 size={14} className="animate-spin" /> : <ImagePlus size={14} />} Upload image
+            </button>
+            {value.avatarUrl && <button type="button" aria-label="Restore default Coordinator avatar" title="Restore default" disabled={saving || uploading} onClick={() => onChange({ avatarUrl: null, avatarCrop: "circle" })} className="flex size-9 items-center justify-center rounded-lg text-ink-secondary hover:bg-control hover:text-danger disabled:opacity-50"><Trash2 size={14} /></button>}
+          </div>
+        </div>
+      </div>
+      {value.avatarUrl && <div className="mt-4 grid grid-cols-3 overflow-hidden rounded-lg border border-hairline/40">{COORDINATOR_AVATAR_CROPS.map((crop, index) => <button key={crop} type="button" aria-pressed={value.avatarCrop === crop} onClick={() => onChange({ avatarUrl: value.avatarUrl, avatarCrop: crop })} className={cn("py-1.5 text-[12.5px]", index > 0 && "border-l border-hairline/40", value.avatarCrop === crop ? "bg-control text-ink" : "text-ink-secondary hover:bg-control/60 hover:text-ink")}>{CROP_LABEL[crop]}</button>)}</div>}
+      {error && <div role="alert" className="mt-3 text-[12px] text-danger">{error}</div>}
+    </div>
+  );
+}
 
 function SelectionFields({
   label,
@@ -121,6 +184,7 @@ export function CoordinatorSettings() {
 
   return (
     <div className="flex flex-col gap-4">
+      <CoordinatorAppearance value={draft} saving={saving} onChange={(appearance) => void save({ ...draft, ...appearance })} />
       <div className="rounded-xl bg-card p-4">
         <div className="text-[15px] font-medium text-ink">Model policy</div>
         <div className="mt-1 text-[12.5px] text-ink-secondary">Dedicated, tool-free models used only for planning and coordination decisions.</div>

@@ -5,6 +5,10 @@ export const BOT_AVATAR_CROPS = ["mascot", "circle", "rounded", "square"] as con
 export const botAvatarCropSchema = z.enum(BOT_AVATAR_CROPS);
 export type BotAvatarCrop = z.infer<typeof botAvatarCropSchema>;
 
+export const COORDINATOR_AVATAR_CROPS = ["circle", "rounded", "square"] as const;
+export const coordinatorAvatarCropSchema = z.enum(COORDINATOR_AVATAR_CROPS);
+export type CoordinatorAvatarCrop = z.infer<typeof coordinatorAvatarCropSchema>;
+
 /**
  * Custom avatars are deliberately limited to this app's attachment server.
  * Besides making persisted profiles portable across desktop/browser clients,

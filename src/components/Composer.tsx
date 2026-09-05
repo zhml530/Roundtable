@@ -34,7 +34,7 @@ function mentionQueryAt(text: string, caret: number): { start: number; query: st
 
 type MentionChoice = { id: string; name: string; bot?: Bot };
 
-function PermissionModeSelector({ bot, onSetAuto }: { bot: Bot; onSetAuto: (auto: boolean) => void }) {
+function PermissionModeSelector({ bots, targetName, onSetAuto }: { bots: Bot[]; targetName: string; onSetAuto: (auto: boolean) => void }) {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
 
@@ -55,9 +55,10 @@ function PermissionModeSelector({ bot, onSetAuto }: { bot: Bot; onSetAuto: (auto
     return () => document.removeEventListener("keydown", closeOnEscape);
   }, [open]);
 
-  const mode = bot.autoApprove ? "auto" : "ask";
+  const autoCount = bots.filter((bot) => bot.autoApprove).length;
+  const mode = autoCount === 0 ? "ask" : autoCount === bots.length ? "auto" : "mixed";
   const Icon = mode === "auto" ? ShieldCheck : Hand;
-  const label = mode === "auto" ? "Approve for me" : "Ask for approval";
+  const label = mode === "auto" ? "Approve for me" : mode === "mixed" ? "Mixed approvals" : "Ask for approval";
 
   return (
     <div className="relative flex items-center" ref={wrapperRef}>
@@ -75,11 +76,11 @@ function PermissionModeSelector({ bot, onSetAuto }: { bot: Bot; onSetAuto: (auto
       {open && (
         <div
           role="menu"
-          aria-label={`Permission mode for ${bot.name}`}
+          aria-label={`Permission mode for ${targetName}`}
           className="absolute bottom-full left-0 z-30 mb-2 w-80 overflow-hidden rounded-xl border border-hairline/40 bg-raised shadow-lg"
         >
           <div className="border-b border-hairline/20 px-4 py-3 text-[13px] font-medium text-ink-secondary">
-            How should {bot.name} actions be approved?
+            How should actions by {targetName} be approved?
           </div>
           <div className="flex flex-col py-1">
             <button
@@ -123,6 +124,11 @@ function PermissionModeSelector({ bot, onSetAuto }: { bot: Bot; onSetAuto: (auto
               </div>
             </button>
           </div>
+          {bots.length > 1 && (
+            <div className="border-t border-hairline/20 px-4 py-2.5 text-[12px] leading-relaxed text-ink-secondary">
+              This updates the permission mode for all {bots.length} agents in this Channel.
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -265,8 +271,10 @@ export function Composer({
   // a chip on its own is a message: the send control has to appear for it
   const fileInput = useRef<HTMLInputElement>(null);
   const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null);
-  // Auto mode belongs to one bot; a room has several, each with its own.
-  const autoBot = group ? undefined : bot;
+  // A Channel control updates every member's own policy. Runtime approvals
+  // still belong to the exact Agent session that requested the action.
+  const permissionBots = group ? (members ?? []) : bot ? [bot] : [];
+  const permissionTargetName = group ? `${group.name} agents` : (bot?.name ?? "this agent");
   const pickFiles = async (picked: FileList | null) => {
     if (!picked?.length) return;
     const { attachments: added, notice } = await intakeFiles(Array.from(picked), {
@@ -280,8 +288,9 @@ export function Composer({
     if (notice) setAttachmentNotice(notice);
   };
   const setAuto = (auto: boolean) => {
-    if (!autoBot) return;
-    dispatch({ type: "updateBot", botId: autoBot.id, patch: { autoApprove: auto } });
+    for (const target of permissionBots) {
+      dispatch({ type: "updateBot", botId: target.id, patch: { autoApprove: auto } });
+    }
   };
 
   const hasContent = Boolean(text.trim()) || attachments.length > 0;
@@ -484,7 +493,9 @@ export function Composer({
               >
                 <Paperclip size={17} />
               </button>
-              {autoBot && <PermissionModeSelector bot={autoBot} onSetAuto={setAuto} />}
+              {permissionBots.length > 0 && (
+                <PermissionModeSelector bots={permissionBots} targetName={permissionTargetName} onSetAuto={setAuto} />
+              )}
             </div>
           )}
           <textarea

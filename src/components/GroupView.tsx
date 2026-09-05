@@ -13,7 +13,7 @@ import {
   type Group,
   type Message,
 } from "@/state/store";
-import { BotAvatar, MausAvatar } from "./Avatar";
+import { BotAvatar, CoordinatorAvatar, MausAvatar } from "./Avatar";
 import { normalizeState } from "@/lib/mascot";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { Composer } from "./Composer";
@@ -54,11 +54,20 @@ function dayLabel(at: number): string {
   return d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
 }
 
+/** Older persisted Coordinator deliveries predate the explicit author field. */
+function isCoordinatorMessage(message: Message | undefined): boolean {
+  return message?.author === "coordinator" || Boolean(message?.executionReport);
+}
+
 /** 32px maus + name, shown once per sender cluster. */
-function ClusterLabel({ bot, name, color }: { bot?: Bot; name: string; color: string }) {
+function ClusterLabel({ bot, name, color, coordinator = false }: { bot?: Bot; name: string; color: string; coordinator?: boolean }) {
+  const { state } = useStore();
+  const coordinatorSettings = state.config?.coordinator;
   return (
     <div className="mt-1 flex items-center gap-1.5 pl-0.5">
-      {bot ? (
+      {coordinator ? (
+        <CoordinatorAvatar avatarUrl={coordinatorSettings?.avatarUrl} avatarCrop={coordinatorSettings?.avatarCrop} size={32} />
+      ) : bot ? (
         <BotAvatar
           bot={bot}
           state={normalizeState(bot.mascotExpression) ?? "happy"}
@@ -77,7 +86,8 @@ function ClusterLabel({ bot, name, color }: { bot?: Bot; name: string; color: st
           animated={false}
         />
       )}
-      <span className="text-[11px] font-medium text-ink-secondary">{name}</span>
+      <span className="text-[11px] font-medium text-ink-secondary">{coordinator ? "Coordinator" : name}</span>
+      {coordinator && <span className="rounded-full bg-accent/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-accent">System</span>}
     </div>
   );
 }
@@ -129,7 +139,12 @@ const Transcript = memo(function Transcript({
         const newDay = !prev || new Date(prev.at).toDateString() !== new Date(m.at).toDateString();
         const user = m.role === "user";
         const attachedImages = user && m.text ? splitAttachedImages(m.text) : null;
-        const newCluster = !prev || prev.role !== m.role || prev.from?.botId !== m.from?.botId || newDay;
+        const coordinator = isCoordinatorMessage(m);
+        const newCluster = !prev
+          || prev.role !== m.role
+          || prev.from?.botId !== m.from?.botId
+          || isCoordinatorMessage(prev) !== coordinator
+          || newDay;
         const row =
           // a member can hit a permission ask mid-turn; without this the
           // card never rendered here and the bot waited out its timeout.
@@ -218,8 +233,13 @@ const Transcript = memo(function Transcript({
                 {dayLabel(m.at)} {formatTime(m.at)}
               </div>
             )}
-            {!user && m.from && newCluster && (
-              <ClusterLabel bot={memberOf(m.from.botId)} name={m.from.name} color={m.from.color} />
+            {!user && (m.from || coordinator) && newCluster && (
+              <ClusterLabel
+                bot={m.from ? memberOf(m.from.botId) : undefined}
+                name={m.from?.name ?? "Coordinator"}
+                color={m.from?.color ?? "purple"}
+                coordinator={coordinator}
+              />
             )}
             {row}
           </div>
@@ -782,7 +802,7 @@ export function GroupView({ group }: { group: Group }) {
         const pinned = group.messages.find((m) => m.id === group.pinnedMessageId && m.kind === "text");
         const text = pinned ? (pinned.text ?? "").replace(/\s+/g, " ").trim() : "";
         if (!pinned || !text) return null;
-        const sender = pinned.role === "user" ? "You" : (pinned.from?.name ?? "A bot");
+        const sender = pinned.role === "user" ? "You" : isCoordinatorMessage(pinned) ? "Coordinator" : (pinned.from?.name ?? "A bot");
         return (
           <div className="mx-auto w-full max-w-[900px] px-5">
             <div className="mb-2 flex items-center gap-2 rounded-lg border border-accent/25 bg-accent/[0.07] px-3 py-1.5">

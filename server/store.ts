@@ -79,6 +79,8 @@ export interface SecretRequestCardData {
 }
 
 export interface Message {
+  /** System-authored Channel delivery. Kept separate from Bot attribution. */
+  author?: "coordinator";
   /** Origin of a Channel projection; approvals always resolve on this session. */
   source?: { threadId: string; messageId: string };
   executionReport?: string;
