@@ -215,6 +215,27 @@ interface CoordinatorRunSnapshot {
 
 Runtime 不应把完整 Channel transcript、Bot 输出或系统内部对象直接拼接给 LLM。Context Compiler 只生成完成当前决策所需的最小上下文：
 
+当前实现还会读取 Runtime 自己维护的
+`~/.Roundtable/channel-projects/<channel-id>/PROJECT_STATE.md`。每个 Run 的最终答案
+产生后，Coordinator 以旧 checkpoint 和本轮持久化证据生成新 checkpoint；Runtime
+执行 32 KiB 上限校验并原子替换文件。完整 transcript/receipts 仍是审计真相，摘要只
+负责跨长会话恢复“当前项目状态”。
+
+```mermaid
+stateDiagram-v2
+    [*] --> LoadCheckpoint: start Channel Run
+    LoadCheckpoint --> Plan
+    Plan --> Execute
+    Execute --> Replan: failed, rejected, or steered
+    Replan --> Execute
+    Execute --> Synthesize: acceptance boundary reached
+    Synthesize --> UpdateCheckpoint
+    UpdateCheckpoint --> Persisted: atomic replace
+    UpdateCheckpoint --> PreviousCheckpoint: update failed
+    Persisted --> [*]
+    PreviousCheckpoint --> [*]
+```
+
 - 当前 Goal 和用户补充约束。
 - 可用 Bot 的稳定 ID、名称、能力摘要和状态。
 - 当前 DAG、Task 状态和依赖。

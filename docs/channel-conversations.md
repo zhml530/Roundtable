@@ -6,6 +6,12 @@ sessions in other Channels. DAG tasks are assignments within that session, not
 new conversations. Up to two independent tasks run concurrently; turns belonging
 to the same Bot remain serialized.
 
+Each Channel also owns a compact project checkpoint at
+`~/.Roundtable/channel-projects/<channel-id>/PROJECT_STATE.md`. This is
+Roundtable Runtime state, separate from every Bot's private `MEMORY.md` and from
+the user's repository. It survives provider-session loss, model changes, new
+Coordinator runs, and application restarts.
+
 Planning uses the Channel roster's Bot IDs, names, titles, and full descriptions.
 Task roles can describe any specialization, including Researcher and Critic;
 execution uses the selected Bot's profile. Ordinary analysis does not acquire an
@@ -14,9 +20,12 @@ gate, and high-risk review policy remains enforced. Legacy role-only proposals
 require a matching Channel profile; unknown specializations must supply a Bot ID.
 
 ```mermaid
-flowchart LR
+flowchart TD
     User --> Channel
-    Channel --> Coordinator[System Coordinator]
+    Channel --> Transcript[Durable transcript]
+    State[PROJECT_STATE.md] --> Context[Bounded context compiler]
+    Transcript --> Context
+    Context --> Coordinator[System Coordinator]
     Coordinator --> Researcher[Channel Researcher session]
     Coordinator --> Critic[Channel Critic session]
     Researcher --> Events[Attributed replies and approval requests]
@@ -26,9 +35,26 @@ flowchart LR
     Approval --> Researcher
     Approval --> Critic
     Coordinator --> Delivery[Consolidated answer]
+    Delivery --> Checkpoint[Merge current state checkpoint]
+    Checkpoint --> State
     Delivery --> Files[Supporting file links]
     Files --> Details[Collapsed execution details]
 ```
+
+## Durable project state
+
+- Planning, synthesis, result-driven replanning, and every Worker assignment
+  receive the latest bounded project checkpoint in addition to recent Channel
+  conversation.
+- After a Run produces its final answer, Coordinator Intelligence merges the
+  previous checkpoint with the latest goal, Steering, task results, artifacts,
+  verification, and unresolved issues. Runtime atomically replaces the file.
+- The checkpoint is capped at 32 KiB and is always presented as untrusted
+  evidence, never as system instructions or execution authority.
+- Checkpoint failure does not discard the completed Run or overwrite the last
+  good state. The failure is retained in Run events and metadata.
+- Full messages and execution receipts remain the audit log. `PROJECT_STATE.md`
+  is the compact continuation context, not a replacement for that history.
 
 ## Session and event ownership
 

@@ -39,6 +39,55 @@ const policy = () => ({
 });
 
 describe("Coordinator domain", () => {
+  it("checkpoints durable project state and restores it into the next Channel run", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "channel-project-state-")); dirs.push(dir);
+    let state: string | null = null;
+    const planningPrompts: string[] = [];
+    const workerPrompts: string[] = [];
+    const purposes: Array<string | undefined> = [];
+    let checkpoint = 0;
+    const manager = new CoordinationManager({
+      file: join(dir, "runs.json"),
+      groupBots: () => [bots[0]!],
+      coordinatorPolicy: policy,
+      synthesize: true,
+      loadProjectState: () => state,
+      saveProjectState: (_groupId, text) => {
+        state = text;
+        return { bytes: Buffer.byteLength(text) };
+      },
+      runCoordinatorTurn: async ({ purpose, prompt }) => {
+        purposes.push(purpose);
+        if (purpose === "synthesis") return { text: "The requested milestone is complete." };
+        if (purpose === "checkpoint") {
+          checkpoint += 1;
+          expect(prompt).toContain('"previousProjectState"');
+          return { text: `# Project\nDemo\n\n## Current state\nMilestone ${checkpoint} complete.` };
+        }
+        planningPrompts.push(prompt);
+        return { text: JSON.stringify([{ title: "Continue project", description: "Complete the next milestone", role: "developer", botId: "dev" }]) };
+      },
+      createTask: () => ({ threadId: `worker-${workerPrompts.length}` }),
+      runBotTurn: async ({ prompt }) => {
+        workerPrompts.push(prompt);
+        return { text: "Implemented and verified the milestone." };
+      },
+    });
+
+    const first = await manager.start("room", "Complete milestone one");
+    await vi.waitFor(() => expect(first.status).toBe("completed"));
+    expect(first.projectState?.error).toBeUndefined();
+    expect(state).toContain("Milestone 1 complete");
+    expect(first.projectState).toMatchObject({ bytes: expect.any(Number), updatedAt: expect.any(Number) });
+
+    const second = await manager.start("room", "Continue with milestone two");
+    await vi.waitFor(() => expect(second.status).toBe("completed"));
+    expect(planningPrompts[1]).toContain("Milestone 1 complete");
+    expect(workerPrompts[1]).toContain("Roundtable project state");
+    expect(workerPrompts[1]).toContain("Milestone 1 complete");
+    expect(purposes.filter((purpose) => purpose === "checkpoint")).toHaveLength(2);
+  });
+
   it("plans and executes using the Channel's specialist profiles", async () => {
     const dir = mkdtempSync(join(tmpdir(), "channel-profiles-")); dirs.push(dir);
     const crew: CoordinationBot[] = [

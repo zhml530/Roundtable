@@ -7,6 +7,11 @@
 Channel；最终交付按“答案 → 支持文件 → 折叠执行详情”排序，执行完成与评审通过
 分别记录。实现边界与验证说明见 [Channel conversations](docs/channel-conversations.md)。
 
+2026-09-05 更新：每个 Channel 增加 Roundtable 自主管理的
+`PROJECT_STATE.md`。Coordinator 在 Run 完成后原子更新项目状态摘要，下一次 Run 的
+Planning、Replan、Synthesis 和 Worker 会话都会加载该摘要，因此长会话不依赖某个
+Provider session 永久存在。
+
 ## 1. 产品定位
 
 Coordinator 是 Roundtable 的系统级多 Agent 协调控制面，不是某个 Bot、Persona、

@@ -21,6 +21,7 @@ import {
 
 import { approvalKey, autoVerdict } from "./auto-approve.ts";
 import { collectChannelArtifacts, readChannelArtifact } from "./channel-artifacts.ts";
+import { loadChannelProjectState, writeChannelProjectState } from "./channel-project-state.ts";
 import { appendDecision, readDecisions } from "./decision-log.ts";
 import { validateBotCwd } from "./bot-cwd.ts";
 import { attachmentExists, extensionForMime, IMAGE_MAX_BYTES, readAttachment, saveImage, type SavedAttachment } from "./attachments.ts";
@@ -122,7 +123,7 @@ import { SPAWNED_PROXIES } from "./proxy-paths.ts";
 import { loadBundledSkills, loadUserSkills, mergeSkills, renderSkillInstructions, selectBundledSkills } from "./skill-library.ts";
 import { installedPlaybookInstructions } from "./installed-playbooks.ts";
 import { createBotPackageExport } from "./package-export.ts";
-import { COORDINATOR_DECISION_PROMPT, COORDINATOR_SYSTEM_PROMPT, COORDINATOR_SYNTHESIS_PROMPT, CoordinationManager } from "./coordination.ts";
+import { COORDINATOR_CHECKPOINT_PROMPT, COORDINATOR_DECISION_PROMPT, COORDINATOR_SYSTEM_PROMPT, COORDINATOR_SYNTHESIS_PROMPT, CoordinationManager } from "./coordination.ts";
 
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
 const WEBHOOK_PORT = Number(process.env.OMB_WEBHOOK_PORT || PORT + 1);
@@ -1615,6 +1616,8 @@ coordination = new CoordinationManager({
     const group = store.group(groupId);
     return group ? `${group.bulletin}\n${serializeRoomContext(group.threadId, cfg.profile?.name?.trim() || "User")}` : "";
   },
+  loadProjectState: loadChannelProjectState,
+  saveProjectState: (groupId, state) => writeChannelProjectState(groupId, state),
   groupBots: (groupId) => {
     const group = store.group(groupId);
     if (!group) return [];
@@ -1725,7 +1728,7 @@ coordination = new CoordinationManager({
       reject(new Error(`Coordinator engine ${selection.instanceId} is unavailable`));
       return;
     }
-    const threadId = `coordinator:${runId}:planning:${revision}:${randomUUID()}`;
+    const threadId = `coordinator:${runId}:${purpose ?? "planning"}:${revision}:${randomUUID()}`;
     let text = "";
     let settled = false;
     let runtimeError: string | undefined;
@@ -1767,7 +1770,13 @@ coordination = new CoordinationManager({
       text: prompt,
       model: selection.model,
       effort: selection.effort,
-      system: purpose === "synthesis" ? COORDINATOR_SYNTHESIS_PROMPT : purpose === "decision" ? COORDINATOR_DECISION_PROMPT : COORDINATOR_SYSTEM_PROMPT,
+      system: purpose === "synthesis"
+        ? COORDINATOR_SYNTHESIS_PROMPT
+        : purpose === "decision"
+          ? COORDINATOR_DECISION_PROMPT
+          : purpose === "checkpoint"
+            ? COORDINATOR_CHECKPOINT_PROMPT
+            : COORDINATOR_SYSTEM_PROMPT,
     }).catch((error) => finish(error instanceof Error ? error : new Error(String(error))));
   }),
 });
