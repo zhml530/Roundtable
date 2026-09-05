@@ -308,8 +308,10 @@ Replan 不能覆盖已完成任务的历史记录。新 DAG 通过 revision 追�
 
 ### Phase 3：动态协调
 
-- 支持 Plan revision、Steering 和 Replan。
-- 支持已完成 receipt 复用和失效规则。
+- 已支持结果驱动的补充任务 revision：读取已完成 receipt，追加经过 Runtime 校验的任务，
+  最多三轮，并将依赖证据传给补充任务。
+- 待支持活动 Run 中用户消息触发的 Steering，以及修改或取消尚未执行的任务。
+- 待补充 receipt 失效规则；当前已完成 receipt 保持不可变并可作为补充任务证据复用。
 - 支持高风险任务的人工 Plan approval。
 
 ### Phase 4：策略路由与评估

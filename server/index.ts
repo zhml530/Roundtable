@@ -122,7 +122,7 @@ import { SPAWNED_PROXIES } from "./proxy-paths.ts";
 import { loadBundledSkills, loadUserSkills, mergeSkills, renderSkillInstructions, selectBundledSkills } from "./skill-library.ts";
 import { installedPlaybookInstructions } from "./installed-playbooks.ts";
 import { createBotPackageExport } from "./package-export.ts";
-import { COORDINATOR_SYSTEM_PROMPT, COORDINATOR_SYNTHESIS_PROMPT, CoordinationManager } from "./coordination.ts";
+import { COORDINATOR_DECISION_PROMPT, COORDINATOR_SYSTEM_PROMPT, COORDINATOR_SYNTHESIS_PROMPT, CoordinationManager } from "./coordination.ts";
 
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
 const WEBHOOK_PORT = Number(process.env.OMB_WEBHOOK_PORT || PORT + 1);
@@ -1610,6 +1610,7 @@ routines.start();
 coordination = new CoordinationManager({
   emit: broadcast,
   synthesize: true,
+  decideAfterResults: true,
   channelContext: (groupId) => {
     const group = store.group(groupId);
     return group ? `${group.bulletin}\n${serializeRoomContext(group.threadId, cfg.profile?.name?.trim() || "User")}` : "";
@@ -1770,7 +1771,7 @@ coordination = new CoordinationManager({
       text: prompt,
       model: selection.model,
       effort: selection.effort,
-      system: purpose === "synthesis" ? COORDINATOR_SYNTHESIS_PROMPT : COORDINATOR_SYSTEM_PROMPT,
+      system: purpose === "synthesis" ? COORDINATOR_SYNTHESIS_PROMPT : purpose === "decision" ? COORDINATOR_DECISION_PROMPT : COORDINATOR_SYSTEM_PROMPT,
     }).catch((error) => finish(error instanceof Error ? error : new Error(String(error))));
   }),
 });

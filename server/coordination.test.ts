@@ -428,6 +428,68 @@ describe("Coordinator domain", () => {
     expect(run.report).toContain("Coordinator report — completed");
   });
 
+  it("reads completed results and adds validated follow-up work before answering", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "roundtable-result-decisions-")); dirs.push(dir);
+    const workerPrompts: string[] = [];
+    let decisionCalls = 0;
+    const manager = new CoordinationManager({
+      file: join(dir, "runs.json"), groupBots: () => bots, coordinatorPolicy: policy,
+      decideAfterResults: true, synthesize: true,
+      runCoordinatorTurn: async ({ purpose, prompt }) => {
+        if (purpose === "synthesis") return { text: "The investigation and targeted verification are complete." };
+        if (purpose === "decision") {
+          decisionCalls += 1;
+          expect(prompt).toContain(decisionCalls === 1 ? "Initial finding" : "Follow-up verification");
+          return decisionCalls === 1
+            ? { text: JSON.stringify({ action: "add_tasks", rationale: "The finding needs targeted verification", tasks: [
+              { title: "Verify finding", description: "Check the discovered condition", role: "tester", botId: "test", dependsOn: ["Inspect"] },
+            ] }) }
+            : { text: JSON.stringify({ action: "complete", rationale: "The evidence now answers the goal" }) };
+        }
+        return { text: JSON.stringify([
+          { id: "inspect", title: "Inspect", description: "Investigate the condition", role: "architect", botId: "arch" },
+        ]) };
+      },
+      createTask: (_bot, title) => ({ threadId: title }),
+      runBotTurn: async ({ prompt }) => {
+        workerPrompts.push(prompt);
+        return { text: workerPrompts.length === 1 ? "Initial finding" : "Follow-up verification" };
+      },
+    });
+    const run = await manager.start("room", "Investigate and answer");
+    await vi.waitFor(() => expect(run.status).toBe("completed"));
+    expect(decisionCalls).toBe(2);
+    expect(run.decisions?.map((decision) => decision.action)).toEqual(["add_tasks", "complete"]);
+    expect(run.tasks.map((task) => task.title)).toEqual(["Inspect", "Verify finding"]);
+    expect(workerPrompts[1]).toContain("Initial finding");
+    expect(run.answer).toBe("The investigation and targeted verification are complete.");
+  });
+
+  it("delivers completed Bot results when final synthesis fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "roundtable-answer-fallback-")); dirs.push(dir);
+    const delivered: string[] = [];
+    const manager = new CoordinationManager({
+      file: join(dir, "runs.json"), groupBots: () => bots, coordinatorPolicy: policy, synthesize: true,
+      runCoordinatorTurn: async ({ purpose }) => {
+        if (purpose === "synthesis") throw new Error("summarizer unavailable");
+        return { text: JSON.stringify([
+          { title: "Inspect", description: "Inspect alpha", role: "architect", botId: "arch" },
+          { title: "Verify", description: "Verify beta", role: "tester", botId: "test" },
+        ]) };
+      },
+      createTask: (_bot, title) => ({ threadId: title }),
+      runBotTurn: async ({ threadId }) => ({ text: `${threadId} result` }),
+      appendChannelMessage: (_group, text) => delivered.push(text),
+    });
+    const run = await manager.start("room", "Inspect both areas");
+    await vi.waitFor(() => expect(run.status).toBe("completed"));
+    expect(run.synthesisError).toContain("summarizer unavailable");
+    expect(run.answer).toContain("Inspect result");
+    expect(run.answer).toContain("Verify result");
+    expect(delivered.at(-1)).toBe(run.answer);
+    expect(delivered.at(-1)).not.toContain("summary is unavailable");
+  });
+
   it("treats a mention as a task-assignment constraint", async () => {
     const dir = mkdtempSync(join(tmpdir(), "roundtable-coordination-mention-"));
     dirs.push(dir);
