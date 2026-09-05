@@ -9,7 +9,6 @@ import {
   buildCoordinationAnswer,
   CoordinationManager,
   fallbackPlan,
-  implementationRequested,
   normalizeCoordinationPlan,
   reviewApproved,
   validateCoordinationPlan,
@@ -68,20 +67,24 @@ describe("Coordinator domain", () => {
     expect(prompts[0]).toContain("Collect published evidence.");
     expect(prompts[1]).toContain("Challenge assumptions and evidence quality.");
     expect(prompts.join("\n")).not.toContain("Own architecture and decomposition");
+    expect(prompts.join("\n")).toContain("Execution intent: follow the assigned task description");
+    expect(prompts.join("\n")).not.toContain("This is an analysis/answer task");
     expect(run.reviewStatus).toBe("not_required");
   });
 
-  it("keeps research and summaries out of automatic implementation loops", () => {
-    expect(implementationRequested("Evaluate VLM feasibility and propose an evaluation plan")).toBe(false);
-    expect(implementationRequested("I need the summary, don't implement anything")).toBe(false);
-    expect(implementationRequested("Now fix the project summary delivery issues")).toBe(true);
-    expect(fallbackPlan("Investigate architecture feasibility").tasks).toHaveLength(1);
+  it("uses a neutral fallback instead of inferring execution intent from goal keywords", () => {
+    expect(fallbackPlan("Investigate architecture feasibility").tasks).toEqual([
+      expect.objectContaining({ id: "complete", title: "Complete the request", description: "Investigate architecture feasibility" }),
+    ]);
+    expect(fallbackPlan("Create and render a launch video").tasks).toEqual([
+      expect.objectContaining({ id: "complete", title: "Complete the request", description: "Create and render a launch video" }),
+    ]);
   });
 
   it.each([
-    ["Evaluate VLM feasibility", 0],
+    ["Evaluate VLM feasibility", 2],
     ["Implement a video pipeline", 2],
-  ])("separates review rejection from execution completion for %s", async (goal, cycles) => {
+  ])("lets an explicit reviewer gate drive corrections without classifying %s", async (goal, cycles) => {
     const dir = mkdtempSync(join(tmpdir(), "channel-review-")); dirs.push(dir);
     const receipts: Array<{ text: string; report?: string }> = [];
     const manager = new CoordinationManager({

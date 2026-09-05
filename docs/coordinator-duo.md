@@ -25,6 +25,11 @@ flowchart TD
 - Proposals contain `title`, `description`, `role`, `botId`, and optional
   `dependsOn` references to task IDs or titles. Role-only legacy proposals
   remain supported through deterministic Bot binding.
+- Coordinator Intelligence decides whether a task must analyze, create or edit
+  artifacts, run commands, verify results, or review a deliverable, and writes
+  those actions into the task description. Runtime does not classify the
+  user's goal with an implementation-keyword list; it validates and schedules
+  the resulting DAG while each assigned Bot performs the requested work.
 - `@everyone`, `@all`, and individual mentions constrain participation, not
   concurrency. Each requested active Bot must receive a task. Missing
   coverage or an unavailable explicit Bot blocks planning with a reason;
