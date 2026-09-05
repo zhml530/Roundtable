@@ -828,8 +828,6 @@ export function GroupView({ group }: { group: Group }) {
         );
       })()}
 
-      {!setupPending && !group.dm && <CoordinatorMissionControl group={group} />}
-
       {/* Transcript */}
       <div
         ref={scrollRef}
@@ -957,6 +955,10 @@ export function GroupView({ group }: { group: Group }) {
         >
           <ArrowDown size={13} /> Jump to latest
         </button>
+      )}
+
+      {!setupPending && !group.dm && (
+        <CoordinatorMissionControl key={group.coordination?.id ?? "idle"} group={group} />
       )}
 
       <Composer

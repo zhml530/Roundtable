@@ -593,7 +593,7 @@ export function Composer({
                   : `${busyName} is working — sends when this turn finishes`
                 : group
                   ? runActive
-                    ? "A Coordinator run is active — use Mission Control or wait for completion"
+                    ? "A Coordinator run is active — follow progress above"
                     : `Give ${group.name} a goal — Coordinator assigns the work`
                   : `Message ${bot?.name ?? ""}`
           }
