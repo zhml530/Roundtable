@@ -57,7 +57,7 @@ Runtime 是唯一可以改变协调状态的组件，负责：
 - 控制最大并发、超时、取消和重试。
 - 创建独立 Bot Task/thread 并收集 receipt。
 - 执行 Pause、Resume、Retry、Cancel 和 Replan。
-- 强制 Reviewer、审批和 Fix cycle 上限。
+- 强制 Reviewer、审批和 review-triggered Replan 上限。
 - 统计 Coordinator 与 Bot 的 Usage、成本和耗时。
 - 生成可审计的事件时间线和最终报告。
 
@@ -68,7 +68,7 @@ Runtime 是唯一可以改变协调状态的组件，负责：
 - 绕过工具审批。
 - 提升 Bot 权限。
 - 改变凭据或 Provider 配置。
-- 超过并发、成本、重试或 Fix cycle 上限。
+- 超过并发、成本、重试或 Replan 上限。
 - 将未校验的文本直接解释为可执行 DAG。
 
 ## 4. Coordinator Intelligence 的职责
@@ -235,6 +235,8 @@ stateDiagram-v2
     Running --> Paused: Pause
     Paused --> Running: Resume
     Running --> Replanning: Failure / steering / policy trigger
+    Running --> Running: Restart / recover persisted revision
+    Paused --> Paused: Restart / preserve pause
     Replanning --> Validating: Revised proposal
     Running --> Reviewing: Execution complete
     Reviewing --> Replanning: Changes requested
@@ -249,6 +251,12 @@ stateDiagram-v2
 ```
 
 状态变更由 Runtime 执行并持久化。LLM 只能返回建议动作，例如 `create_plan`、`revise_plan` 或 `synthesize_report`。
+
+Replan 使用追加式 revision，不覆盖已完成任务和 receipt。Reviewer 否决时，Intelligence
+根据具体 finding 选择实际 Channel Bot，Runtime 要求修订以一个终态 Reviewer 结束；任务
+失败时，proposal 必须列出被替代的 failed/blocked task ID，且只有替代 revision 全部成功后
+Runtime 才将旧失败标记为 recovered。重复 proposal、非法 Bot、依赖环、未解决的失败和超出
+review-replan 上限的建议都不能改变 authoritative Run 状态。
 
 ## 11. 失败与降级
 
@@ -266,7 +274,7 @@ Provider 配置重载可能终止进行中的 Provider turn，因此 Coordinator
 
 ## 12. 动态 Replan 与 Steering
 
-长期支持活动 Run 中的新消息：
+活动 Run 中的新消息按以下规则处理：
 
 - Planning：合并补充约束并生成新 Plan revision。
 - Running：先判断是补充信息、修改目标、增加任务还是取消任务。
@@ -275,6 +283,15 @@ Provider 配置重载可能终止进行中的 Provider turn，因此 Coordinator
 - Completed：创建新 Run，并显式引用上一 Run 的报告和 receipts。
 
 Replan 不能覆盖已完成任务的历史记录。新 DAG 通过 revision 追加，已完成 receipt 只能被复用、标记过期或由新验证任务推翻。
+
+Steering 本身是 Run 中的持久化记录，包含消息 ID、基准 revision、pending/applied/blocked
+状态和实际应用 revision。Runtime 只在安全边界调用 Intelligence，不会中途篡改已经 dispatch
+的 worker prompt；最终 synthesis 与 Steering 之间有提交栅栏，晚到消息不能被已完成状态越过。
+
+重启恢复同样由 Runtime 控制：已完成 receipt 保持不变，未开始任务重建为剩余 DAG，重启
+瞬间正在执行的任务复用原 `(Channel, Bot)` thread 并以恢复提示续跑。恢复提示要求先检查
+当前状态再继续，以降低重复副作用风险。Paused 状态跨重启保留；只有 Agent 缺失等确定性
+能力缺口才进入 `PlanningBlocked`。
 
 ## 13. 可观测性与评估
 
@@ -310,7 +327,9 @@ Replan 不能覆盖已完成任务的历史记录。新 DAG 通过 revision 追�
 
 - 已支持结果驱动的补充任务 revision：读取已完成 receipt，追加经过 Runtime 校验的任务，
   最多三轮，并将依赖证据传给补充任务。
-- 待支持活动 Run 中用户消息触发的 Steering，以及修改或取消尚未执行的任务。
+- 已支持活动 Run 中用户消息触发的持久化 Steering，并通过定向 revision 应用修改。
+- 已支持应用重启后从持久化 Run/revision、receipts 和 Channel session 继续执行。
+- 待支持由 Steering 直接取消或替换尚未 dispatch 的单个任务；当前停止整个 Run 使用 Cancel。
 - 待补充 receipt 失效规则；当前已完成 receipt 保持不可变并可作为补充任务证据复用。
 - 支持高风险任务的人工 Plan approval。
 

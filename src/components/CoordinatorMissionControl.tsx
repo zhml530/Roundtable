@@ -69,6 +69,7 @@ export function CoordinatorMissionControl({ group }: { group: Group }) {
   const needsInput = (task: CoordinationTask) => task.status === "running" && !!task.threadId
     && state.bots.some((bot) => bot.id === task.botId && bot.activity === "waiting-on-you");
   const waitingTasks = run.tasks.filter(needsInput);
+  const pendingSteerings = run.steerings?.filter((steering) => steering.status === "pending") ?? [];
   const tasks = run.tasks.filter((task) => task.id !== "planning");
   const completedTasks = tasks.filter((task) => task.status === "completed").length;
   const currentTask = waitingTasks[0]
@@ -77,15 +78,17 @@ export function CoordinatorMissionControl({ group }: { group: Group }) {
     ?? tasks.find((task) => task.status === "pending");
   const stateLabel = waitingTasks.length > 0
     ? "Waiting for you"
-    : run.status === "planning" || run.status === "validating"
-      ? "Planning"
-      : run.status === "reviewing"
-        ? "Preparing final answer"
-        : run.status === "paused"
-          ? "Paused"
-          : run.status === "failed" || run.status === "planning_blocked"
-            ? "Needs attention"
-            : "Running";
+    : pendingSteerings.length > 0
+      ? "Steering queued"
+      : run.status === "planning" || run.status === "validating"
+        ? "Planning"
+        : run.status === "reviewing"
+          ? "Preparing final answer"
+          : run.status === "paused"
+            ? "Paused"
+            : run.status === "failed" || run.status === "planning_blocked"
+              ? "Needs attention"
+              : "Running";
   const taskLabel = (task: CoordinationTask) => {
     if (needsInput(task)) return "Needs your input in Channel";
     if (task.status === "pending") return "Waiting for dependencies";
@@ -126,6 +129,9 @@ export function CoordinatorMissionControl({ group }: { group: Group }) {
             <div>Waiting for your input. Answer the approval requests or questions in this Channel.</div>
             <div className="mt-1 flex flex-wrap gap-2">{waitingTasks.map((task) => <button key={task.id} onClick={() => void openTask(task)} className="rounded border border-amber-500/40 px-2 py-1 hover:bg-amber-500/10">Open {task.botName} task <ExternalLink size={11} className="inline" /></button>)}</div>
           </div>}
+          {pendingSteerings.length > 0 && <div role="status" className="border-b border-sky-500/30 bg-sky-500/10 px-3 py-2 text-[12px] text-ink">
+            Steering is persisted and will be applied at the next safe plan boundary: “{pendingSteerings.at(-1)?.text}”
+          </div>}
           <div className="max-h-[35vh] overflow-auto bg-inset/40">
             {(run.status === "planning" || run.status === "validating") && layout.nodes.length === 0 ? <div className="flex items-center justify-center gap-2 py-10 text-[13px] text-ink-secondary"><Loader2 size={15} className="animate-spin" /> Coordinator is {run.status === "validating" ? "validating the plan" : "planning the work"}…</div> : layout.nodes.length === 0 ? <div className="px-4 py-8 text-center text-[13px] text-ink-secondary">No executable task plan is available.</div> :
             <div className="relative" style={{ width: layout.width, height: layout.height }}>
@@ -142,11 +148,11 @@ export function CoordinatorMissionControl({ group }: { group: Group }) {
                 <div className="flex items-center gap-1.5"><span className={cn("size-2 shrink-0 rounded-full", STATUS_DOT[task.status])} /><span className="truncate text-[10px] font-semibold uppercase tracking-wide text-ink-secondary">{task.role} · {task.botName}</span>{task.threadId && <ExternalLink size={10} className="ml-auto shrink-0 text-ink-secondary" />}</div>
                 <div className="mt-1 line-clamp-2 text-[12px] font-medium leading-snug text-ink">{task.title}</div>
                 <div className={cn("mt-1 text-[10px]", needsInput(task) ? "font-semibold text-amber-600 dark:text-amber-400" : "text-ink-secondary")}>{taskLabel(task)}</div>
-                {task.fixCycle && <span className="absolute bottom-1.5 right-2 text-[9px] text-amber-500">fix {task.fixCycle}</span>}
+                {(task.planRevision ?? 1) > 1 && <span className="absolute bottom-1.5 right-2 text-[9px] text-amber-500">replan {task.planRevision}</span>}
               </button>)}
             </div>}
           </div>
-          <div className="flex items-center justify-between gap-3 px-3 py-2 text-[11px] text-ink-secondary"><span>{completedTasks}/{tasks.length} tasks complete</span><span className="truncate">{run.events.at(-1)?.message}</span></div>
+          <div className="flex items-center justify-between gap-3 px-3 py-2 text-[11px] text-ink-secondary"><span>{completedTasks}/{tasks.length} tasks complete{run.recovery ? " · recovered after restart" : ""}</span><span className="truncate">{run.events.at(-1)?.message}</span></div>
         </>}
         {(error || run.error) && <div className="border-t border-danger/20 bg-danger/10 px-3 py-2 text-[12px] text-danger">{error ?? run.error}</div>}
       </div>

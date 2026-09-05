@@ -130,6 +130,10 @@ export interface CoordinationTask {
   startedAt?: number;
   finishedAt?: number;
   attempt: number;
+  planRevision?: number;
+  replanTrigger?: "review_rejected" | "task_failed" | "result_gap" | "user_steering";
+  resolvedByPlanRevision?: number;
+  recovery?: { reason: "restart"; interruptedAt: number; previousAttempt: number };
   fixCycle?: number;
   usage?: { input: number; output: number; cost?: number | null };
 }
@@ -137,6 +141,17 @@ export interface CoordinationTask {
 export interface CoordinationRun {
   answer?: string;
   reviewStatus?: "not_required" | "approved" | "changes_requested" | "unresolved";
+  steerings?: Array<{
+    id: string;
+    messageId?: string;
+    text: string;
+    at: number;
+    basePlanRevision: number;
+    status: "pending" | "applied" | "blocked";
+    appliedPlanRevision?: number;
+    reason?: string;
+  }>;
+  recovery?: { detectedAt: number; resumedAt?: number; interruptedTaskIds: string[] };
   id: string;
   groupId: string;
   goal: string;

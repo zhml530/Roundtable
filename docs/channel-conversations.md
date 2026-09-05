@@ -74,9 +74,20 @@ opening a different path.
 
 Execution status and review status are separate. `completed` means execution
 finished; review can be `approved`, `changes_requested`, `unresolved`, or
-`not_required`. Automatic fix cycles require an implementation request and stop
-at the configured limit. Analysis and summary requests report missing future
-measurements as limitations and do not start automatic implementation cycles.
+`not_required`. Reviewer rejection triggers a typed Coordinator Replan rather
+than a fixed role pipeline. Runtime validates the appended revision, requires a
+terminal reviewer, rejects repeated plans, and stops at the configured review-
+replan limit. Ordinary critique without an explicit reviewer gate does not
+start an automatic correction loop. Failed tasks remain failed receipts, but a
+successful replacement revision can mark them recovered; unresolved failures
+still make the overall Run fail.
+
+An active Channel Run keeps the composer available for Steering. Each Steering
+message is persisted against the Run and applied through the same typed,
+Runtime-validated revision path; it is never injected into a worker mid-turn.
+Application restart reattaches the persisted Run, preserves completed receipts,
+rebuilds remaining dependencies, and continues interrupted work on the same
+per-Channel Bot session. A paused Run remains paused across restart.
 
 If synthesis fails, the Channel explicitly says a consolidated summary is
 unavailable and points to the Bot findings, while preserving the error in the

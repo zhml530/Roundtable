@@ -56,10 +56,32 @@ assignment events are persisted for later inspection.
 Pause stops new worker execution. Cancellation stops workers and prevents
 queued tasks from starting; a replacement run is rejected until the old run
 drains. A failed task blocks its descendants while independent branches can
-finish. Coordinated workers cannot use Roundtable `ask_bot` or `delegate_bot`
+finish. Failed or blocked work can be replaced by a later revision only when
+the Coordinator names the exact task IDs being resolved and every replacement
+task succeeds. After results arrive, Coordinator Intelligence may propose a typed
+`complete`, `replan`, or `blocked` decision. Replans append a validated plan
+revision and preserve completed receipts; they never replace history. A
+rejected review must produce one terminal reviewer task, repeated identical
+replans are rejected, and Runtime enforces the review-replan limit. Corrective
+work is assigned from the actual Channel roster rather than a fixed Developer
+→ Tester → Reviewer pipeline. Accepted and rejected decisions remain in the
+run audit trail. Coordinated workers cannot use Roundtable
+`ask_bot` or `delegate_bot`
 to create peer turns outside this scheduler; credential tools retain their
 existing behavior. Provider-native internal subagents are outside this
 Roundtable worker-task limit.
+
+Messages sent while a Run is active are persisted as Steering. Runtime lets
+already-dispatched work reach a safe boundary, then asks Coordinator Intelligence
+for a typed decision and appends any accepted work as a new plan revision. A
+Steering message arriving during synthesis invalidates that draft answer and is
+handled before final completion.
+
+On application restart, active Runs are reattached instead of being converted to
+failed Runs. Completed receipts stay immutable, remaining dependencies are rebuilt,
+and an interrupted worker reuses its persisted `(Channel, Bot)` thread with an
+idempotent recovery instruction. A persisted paused Run remains paused. Recovery
+blocks only when its assigned Channel agents no longer exist.
 
 Existing concurrency settings are normalized to 2. Settings presets no longer
 change concurrency; single-Bot channels have one effective slot.
@@ -70,7 +92,8 @@ change concurrency; single-Bot channels have one effective slot.
 installed OMA scheduler to verify overlap, immediate slot refill, dependency
 ordering and result handoff, a peak of two workers, same-role identity,
 mention-all coverage and persistence, same-Bot serialization, failure, and
-cancellation. `server/index.test.ts` verifies the peer-turn guard through the
+cancellation, active Steering, synthesis races, and persisted revision recovery.
+`server/index.test.ts` verifies the peer-turn guard through the
 real harness HTTP API with a fixture provider.
 
 ```text

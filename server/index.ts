@@ -1855,6 +1855,14 @@ _loadPending();
   for (const threadId of leftover) drainDelegations(commsBus, approvalBus, threadId, runDelegatedTurn);
 }
 
+// Provider turns cannot survive a process restart, but Coordinator revisions,
+// completed receipts and per-(Channel, Bot) sessions can. Resume only after
+// stale approvals and queued peer handoffs have been reconciled.
+{
+  const resumed = coordination.resumePersistedRuns();
+  if (resumed.length) console.log(`coordinator: resumed ${resumed.length} persisted Channel run(s)`);
+}
+
 async function runGroupMemberTurn(
   groupId: string,
   botId: string,
@@ -2070,6 +2078,12 @@ async function startGroupTurn(groupId: string, text: string, replyTo?: Message) 
     throw Object.assign(new Error("finish room setup before sending the first message"), { status: 409 });
   }
   if (!group.dm) {
+    const activeRun = coordination!.active(group.id);
+    if (activeRun) {
+      const message = store.appendMessage(group.threadId, { role: "user", kind: "text", text, replyToId: replyTo?.id });
+      coordination!.steer(group.id, text, message.id);
+      return;
+    }
     try {
       coordination!.validateStart(group.id, text);
     } catch (error) {

@@ -84,15 +84,15 @@ stateDiagram-v2
 执行步骤：
 
 1. Coordinator 接收 Channel Goal。
-2. 选择本次 Planner，通常是最匹配的 Architect。
-3. 通过 OMA 生成任务 DAG。
+2. 系统级 Coordinator Intelligence 根据 Channel Bot 能力生成任务 DAG。
+3. Runtime 解析结构化 Plan proposal。
 4. 校验依赖、角色和终态 Reviewer。
 5. 将节点分配给合适的 Bot。
 6. 每个节点创建独立 Bot Task/thread。
 7. Roundtable Runtime 调用现有 Provider/ACP 执行。
 8. Tester 独立验证。
 9. Reviewer 给出最终 Verdict。
-10. Reviewer 否决后自动创建 Fix → Verify → Re-review 分支。
+10. Reviewer 否决后，Coordinator Intelligence 提出定向 Replan；Runtime 校验后追加新的 Plan revision。
 11. Coordinator 汇总结果并生成执行时间线报告。
 
 Planner 和 Architect 只是本次执行角色，不拥有 Coordinator 权限。
@@ -105,7 +105,7 @@ Coordinator 负责：
 - DAG 和依赖状态。
 - Bot 选择与任务分配。
 - Pause、Resume、Retry、Cancel。
-- Reviewer/Fix 闭环。
+- Reviewer/Replan 闭环及修订次数上限。
 - 最终结果和时间线报告。
 
 Bot 负责：
@@ -124,7 +124,7 @@ Channel 页面同时承担目标入口和协调控制台：
 
 - 顶部显示当前 Goal 和 Run 状态。
 - 中间显示实时 DAG。
-- 节点显示角色、Bot、状态、耗时、重试和 Fix cycle。
+- 节点显示角色、Bot、状态、耗时、重试和 Plan revision。
 - 点击节点跳转到准确的 Bot Task 对话。
 - 提供 Pause、Resume、Retry、Cancel。
 - Run 完成后在 Channel 中显示最终报告。
@@ -140,10 +140,18 @@ Channel 页面同时承担目标入口和协调控制台：
 - Paused 阶段：允许修改目标或 DAG 后再 Resume。
 - Completed 阶段：新消息创建新的 Run，并引用上次结果作为上下文。
 
-当前 Runtime 已在初始 DAG 完成后读取结构化任务结果。Coordinator 可以确认已有证据
-足够，或追加最多三轮经过 schema、Bot 归属、依赖和任务总量校验的补充任务；补充任务
-保留已完成 receipt，并显式接收所依赖的证据。活动 Run 中用户新消息触发的 Steering、
-修改和取消 Task 仍属于下一阶段功能。
+当前 Runtime 已在初始 DAG 完成后读取结构化任务结果。Coordinator 可以返回
+`complete`、`replan` 或 `blocked`；Replan 会追加经过 schema、Bot 归属、依赖、终态
+Reviewer、重复计划和任务总量校验的新 revision，保留已完成 receipt，并显式接收所依赖
+的证据。Reviewer 否决后的修正由 Coordinator 根据具体 finding 分配给实际 Channel Bot，
+不再使用固定的 Developer → Tester → Reviewer 链。活动 Run 中用户新消息会被持久化为
+Steering，并在下一个安全边界触发定向 Replan；当前运行中的 Task 不会被中途改写。若消息
+在最终总结期间到达，Runtime 会废弃该轮总结，先应用 Steering，再重新总结。
+
+应用重启时不再把活动 Run 直接标记为失败。Runtime 保留同一 Run、Plan revisions、完成的
+receipts 和 `(Channel, Bot)` session；重启时正在执行的 Task 会以同一 task/thread 续跑，
+并明确要求 Bot 先核对 workspace 或外部状态，再以幂等方式继续。重启前为 Paused 的 Run
+仍保持 Paused，直到用户 Resume。
 
 Run 只有在形成可交付答案后才结束。Coordinator 对一个或多个已完成任务生成最终总结；
 如果总结调用失败或返回空文本，Runtime 使用已完成任务的实质输出生成确定性答案，不能

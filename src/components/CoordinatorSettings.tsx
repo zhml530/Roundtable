@@ -215,7 +215,7 @@ export function CoordinatorSettings() {
           {([
             ["Planning timeout (seconds)", "planningTimeoutMs", draft.planningTimeoutMs / 1000, 10, 600, 1000],
             ["Planning retries", "planningRetries", draft.planningRetries, 0, 3, 1],
-            ["Maximum fix cycles", "maxFixCycles", draft.maxFixCycles, 0, 10, 1],
+            ["Maximum review replans", "maxFixCycles", draft.maxFixCycles, 0, 10, 1],
             ["Run time budget (minutes)", "maxRunMinutes", draft.maxRunMinutes, 1, 1440, 1],
           ] as const).map(([label, key, value, min, max, multiplier]) => (
             <label key={key} className="text-ink-secondary">{label}

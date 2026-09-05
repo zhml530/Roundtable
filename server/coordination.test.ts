@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -82,9 +82,9 @@ describe("Coordinator domain", () => {
   });
 
   it.each([
-    ["Evaluate VLM feasibility", 2],
-    ["Implement a video pipeline", 2],
-  ])("lets an explicit reviewer gate drive corrections without classifying %s", async (goal, cycles) => {
+    "Evaluate VLM feasibility",
+    "Implement a video pipeline",
+  ])("does not invent a fixed correction pipeline for %s", async (goal) => {
     const dir = mkdtempSync(join(tmpdir(), "channel-review-")); dirs.push(dir);
     const receipts: Array<{ text: string; report?: string }> = [];
     const manager = new CoordinationManager({
@@ -100,7 +100,7 @@ describe("Coordinator domain", () => {
     });
     const run = await manager.start("room", goal);
     await vi.waitFor(() => expect(run.status).toBe("completed"));
-    expect(run.fixCycles).toBe(cycles);
+    expect(run.fixCycles).toBe(0);
     expect(run.reviewStatus).toBe("changes_requested");
     expect(receipts.at(-1)?.text).toContain("Prototype evidence");
     expect(receipts.at(-1)?.text).toContain("without review acceptance");
@@ -444,7 +444,7 @@ describe("Coordinator domain", () => {
           decisionCalls += 1;
           expect(prompt).toContain(decisionCalls === 1 ? "Initial finding" : "Follow-up verification");
           return decisionCalls === 1
-            ? { text: JSON.stringify({ action: "add_tasks", rationale: "The finding needs targeted verification", tasks: [
+            ? { text: JSON.stringify({ action: "replan", rationale: "The finding needs targeted verification", tasks: [
               { title: "Verify finding", description: "Check the discovered condition", role: "tester", botId: "test", dependsOn: ["Inspect"] },
             ] }) }
             : { text: JSON.stringify({ action: "complete", rationale: "The evidence now answers the goal" }) };
@@ -462,7 +462,7 @@ describe("Coordinator domain", () => {
     const run = await manager.start("room", "Investigate and answer");
     await vi.waitFor(() => expect(run.status).toBe("completed"));
     expect(decisionCalls).toBe(2);
-    expect(run.decisions?.map((decision) => decision.action)).toEqual(["add_tasks", "complete"]);
+    expect(run.decisions?.map((decision) => decision.action)).toEqual(["replan", "complete"]);
     expect(run.tasks.map((task) => task.title)).toEqual(["Inspect", "Verify finding"]);
     expect(workerPrompts[1]).toContain("Initial finding");
     expect(run.answer).toBe("The investigation and targeted verification are complete.");
@@ -544,37 +544,228 @@ describe("Coordinator domain", () => {
     expect(run.error).toBeTruthy();
   });
 
-  it("turns reviewer rejection into an automatic fix, test, and re-review chain", async () => {
+  it("uses a Coordinator replan to route reviewer findings to the right Channel Bots", async () => {
     const dir = mkdtempSync(join(tmpdir(), "roundtable-coordination-fix-"));
     dirs.push(dir);
-    let calls = 0;
+    const crew: CoordinationBot[] = [
+      { id: "director", name: "Director", title: "Video Director", description: "Own narrative and storyboard", model: "m" },
+      { id: "motion", name: "Motion", title: "Motion Designer", description: "Build and render scenes", model: "m" },
+      { id: "copy", name: "Copy", title: "Copywriter", description: "Write narration and titles", model: "m" },
+      { id: "critic", name: "Critic", title: "Critic", description: "Final acceptance reviewer", model: "m" },
+    ];
+    let decisionCalls = 0;
     let threads = 0;
     const manager = new CoordinationManager({
       file: join(dir, "runs.json"),
-      groupBots: () => bots,
+      groupBots: () => crew,
       coordinatorPolicy: policy,
-      runCoordinatorTurn: async () => ({ text: JSON.stringify([
-        { title: "Design", description: "Design", assignee: "architect" },
-        { title: "Build", description: "Build", assignee: "developer", dependsOn: ["Design"] },
-        { title: "Test", description: "Test", assignee: "tester", dependsOn: ["Build"] },
-        { title: "Review", description: "Review", assignee: "reviewer", dependsOn: ["Test"] },
-      ]) }),
+      decideAfterResults: true,
+      runCoordinatorTurn: async ({ purpose, prompt }) => {
+        if (purpose === "decision") {
+          decisionCalls += 1;
+          const context = JSON.parse(prompt);
+          if (decisionCalls === 1) {
+            expect(context.trigger).toBe("review_rejected");
+            return { text: JSON.stringify({ action: "replan", rationale: "The narration caused the rejected frames", tasks: [
+              { title: "Revise narration", description: "Correct the narration called out by the Critic", role: "Copywriter", botId: "copy", dependsOn: ["Initial acceptance"] },
+              { title: "Re-render", description: "Render the corrected deliverable", role: "Motion Designer", botId: "motion", dependsOn: ["Revise narration"] },
+              { title: "Re-review", description: "Review the corrected deliverable", role: "reviewer", botId: "critic", dependsOn: ["Re-render"] },
+            ] }) };
+          }
+          expect(context.trigger).toBe("result_gap");
+          return { text: JSON.stringify({ action: "complete", rationale: "The corrected deliverable is approved" }) };
+        }
+        return { text: JSON.stringify([
+          { title: "Storyboard", description: "Create the storyboard", role: "Video Director", botId: "director" },
+          { title: "Narration", description: "Write the narration", role: "Copywriter", botId: "copy" },
+          { title: "Render", description: "Render the deliverable", role: "Motion Designer", botId: "motion", dependsOn: ["Storyboard", "Narration"] },
+          { title: "Initial acceptance", description: "Review the initial deliverable", role: "reviewer", botId: "critic", dependsOn: ["Render"] },
+        ]) };
+      },
       createTask: () => ({ threadId: `thread-${++threads}` }),
-      runBotTurn: async () => {
-        calls += 1;
-        if (calls === 4) return { text: "Missing edge-case coverage\nVERDICT: CHANGES_REQUESTED" };
-        if (calls >= 7) return { text: "VERDICT: APPROVED" };
-        return { text: `worker output ${calls}` };
+      runBotTurn: async ({ prompt }) => {
+        if (prompt.includes("Review the initial deliverable")) return { text: "The narration does not match the frames.\nVERDICT: CHANGES_REQUESTED" };
+        if (prompt.includes("Review the corrected deliverable")) return { text: "VERDICT: APPROVED" };
+        return { text: "worker output" };
       },
     });
 
-    await manager.start("room", "Ship with review gate");
+    await manager.start("room", "Create a deliverable with the whole Channel");
     await vi.waitFor(() => expect(manager.latest("room")?.status).toBe("completed"), { timeout: 5_000 });
     const run = manager.latest("room")!;
     expect(run.fixCycles).toBe(1);
     expect(run.tasks).toHaveLength(7);
-    expect(run.tasks.slice(-3).map((task) => task.role)).toEqual(["developer", "tester", "reviewer"]);
-    expect(run.events.some((event) => event.message.includes("generating Fix tasks"))).toBe(true);
+    expect(run.tasks.slice(-3).map((task) => task.botId)).toEqual(["copy", "motion", "critic"]);
+    expect(run.tasks.slice(-3).map((task) => task.planRevision)).toEqual([2, 2, 2]);
+    expect(run.tasks.slice(-3).map((task) => task.replanTrigger)).toEqual(["review_rejected", "review_rejected", "review_rejected"]);
+    expect(run.decisions?.map((decision) => decision.action)).toEqual(["replan", "complete"]);
+    expect(run.reviewStatus).toBe("approved");
+    expect(run.tasks.some((task) => task.title.startsWith("Fix reviewer findings"))).toBe(false);
+  });
+
+  it("does not let Coordinator complete while the latest reviewer rejects the deliverable", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "roundtable-review-invariant-"));
+    dirs.push(dir);
+    const manager = new CoordinationManager({
+      file: join(dir, "runs.json"), groupBots: () => bots, coordinatorPolicy: policy,
+      decideAfterResults: true,
+      runCoordinatorTurn: async ({ purpose }) => purpose === "decision"
+        ? { text: JSON.stringify({ action: "complete", rationale: "Ignore the review" }) }
+        : { text: JSON.stringify([
+          { title: "Work", description: "Produce the requested result", role: "developer", botId: "dev" },
+          { title: "Acceptance", description: "Review the result", role: "reviewer", botId: "review", dependsOn: ["Work"] },
+        ]) },
+      createTask: (_bot, title) => ({ threadId: title }),
+      runBotTurn: async ({ prompt }) => ({ text: prompt.includes("Review the result") ? "VERDICT: CHANGES_REQUESTED" : "result" }),
+    });
+
+    const run = await manager.start("room", "Complete work with acceptance");
+    await vi.waitFor(() => expect(run.status).toBe("completed"));
+    expect(run.decisions).toEqual([
+      expect.objectContaining({ action: "complete", accepted: false, rejectionReason: "Unresolved review findings remain" }),
+    ]);
+    expect(run.reviewStatus).toBe("changes_requested");
+    expect(run.events.some((event) => event.message.includes("completion rejected"))).toBe(true);
+  });
+
+  it("finishes as failed with the Coordinator's reason when safe progress is blocked", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "roundtable-replan-blocked-"));
+    dirs.push(dir);
+    const manager = new CoordinationManager({
+      file: join(dir, "runs.json"), groupBots: () => bots, coordinatorPolicy: policy,
+      decideAfterResults: true,
+      runCoordinatorTurn: async ({ purpose }) => purpose === "decision"
+        ? { text: JSON.stringify({ action: "blocked", rationale: "Required authority is unavailable", needsUser: true }) }
+        : { text: JSON.stringify([{ title: "Inspect", description: "Inspect the request", role: "architect", botId: "arch" }]) },
+      createTask: (_bot, title) => ({ threadId: title }),
+      runBotTurn: async () => ({ text: "The missing authority prevents completion." }),
+    });
+
+    const run = await manager.start("room", "Complete work requiring external authority");
+    await vi.waitFor(() => expect(run.status).toBe("failed"));
+    expect(run.error).toBe("Required authority is unavailable");
+    expect(run.decisions?.at(-1)).toEqual(expect.objectContaining({ action: "blocked", needsUser: true }));
+  });
+
+  it("rejects a review-triggered replan without one terminal reviewer", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "roundtable-replan-review-gate-"));
+    dirs.push(dir);
+    const manager = new CoordinationManager({
+      file: join(dir, "runs.json"), groupBots: () => bots, coordinatorPolicy: policy,
+      decideAfterResults: true,
+      runCoordinatorTurn: async ({ purpose }) => purpose === "decision"
+        ? { text: JSON.stringify({ action: "replan", rationale: "Apply a correction", tasks: [
+          { title: "Correction", description: "Correct the result", role: "developer", botId: "dev", dependsOn: ["Acceptance"] },
+        ] }) }
+        : { text: JSON.stringify([
+          { title: "Work", description: "Produce the result", role: "developer", botId: "dev" },
+          { title: "Acceptance", description: "Review the result", role: "reviewer", botId: "review", dependsOn: ["Work"] },
+        ]) },
+      createTask: (_bot, title) => ({ threadId: title }),
+      runBotTurn: async ({ prompt }) => ({ text: prompt.includes("Review the result") ? "VERDICT: CHANGES_REQUESTED" : "result" }),
+    });
+
+    const run = await manager.start("room", "Complete work with acceptance");
+    await vi.waitFor(() => expect(run.status).toBe("completed"));
+    expect(run.tasks.map((task) => task.title)).toEqual(["Work", "Acceptance"]);
+    expect(run.decisions).toEqual([
+      expect.objectContaining({ action: "replan", accepted: false, rejectionReason: "A review-rejected replan must end in one terminal reviewer task" }),
+    ]);
+    expect(run.events.some((event) => event.message.includes("must end in one terminal reviewer"))).toBe(true);
+  });
+
+  it("stops review-triggered replans at the Runtime-owned limit", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "roundtable-replan-limit-"));
+    dirs.push(dir);
+    let decisionCalls = 0;
+    const manager = new CoordinationManager({
+      file: join(dir, "runs.json"), groupBots: () => bots,
+      coordinatorPolicy: () => ({ ...policy(), maxFixCycles: 1 }),
+      decideAfterResults: true,
+      runCoordinatorTurn: async ({ purpose }) => {
+        if (purpose !== "decision") return { text: JSON.stringify([
+          { title: "Work", description: "Produce the result", role: "developer", botId: "dev" },
+          { title: "Acceptance", description: "Review the result", role: "reviewer", botId: "review", dependsOn: ["Work"] },
+        ]) };
+        decisionCalls += 1;
+        return { text: JSON.stringify({ action: "replan", rationale: "Correct and review once", tasks: [
+          { title: "Correction", description: "Correct the rejected result", role: "developer", botId: "dev", dependsOn: ["Acceptance"] },
+          { title: "Re-review", description: "Review the correction", role: "reviewer", botId: "review", dependsOn: ["Correction"] },
+        ] }) };
+      },
+      createTask: (_bot, title) => ({ threadId: title }),
+      runBotTurn: async ({ prompt }) => ({ text: prompt.includes("Review") ? "VERDICT: CHANGES_REQUESTED" : "result" }),
+    });
+
+    const run = await manager.start("room", "Complete work with bounded acceptance");
+    await vi.waitFor(() => expect(run.status).toBe("completed"));
+    expect(decisionCalls).toBe(1);
+    expect(run.fixCycles).toBe(1);
+    expect(run.tasks).toHaveLength(4);
+    expect(run.reviewStatus).toBe("changes_requested");
+    expect(run.events.some((event) => event.message.includes("unresolved after 1 replans"))).toBe(true);
+  });
+
+  it("stops an identical result-gap replan from looping", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "roundtable-replan-loop-"));
+    dirs.push(dir);
+    const manager = new CoordinationManager({
+      file: join(dir, "runs.json"), groupBots: () => bots, coordinatorPolicy: policy,
+      decideAfterResults: true,
+      runCoordinatorTurn: async ({ purpose }) => purpose === "decision"
+        ? { text: JSON.stringify({ action: "replan", rationale: "Verify once more", tasks: [
+          { title: "Verify finding", description: "Verify the same finding", role: "tester", botId: "test", dependsOn: ["Inspect"] },
+        ] }) }
+        : { text: JSON.stringify([
+          { title: "Inspect", description: "Inspect the request", role: "architect", botId: "arch" },
+        ]) },
+      createTask: (_bot, title) => ({ threadId: title }),
+      runBotTurn: async () => ({ text: "evidence" }),
+    });
+
+    const run = await manager.start("room", "Inspect and verify");
+    await vi.waitFor(() => expect(run.status).toBe("completed"));
+    expect(run.tasks.map((task) => task.title)).toEqual(["Inspect", "Verify finding"]);
+    expect(run.decisions?.map((decision) => [decision.action, decision.accepted])).toEqual([["replan", true], ["replan", false]]);
+    expect(run.events.some((event) => event.message.includes("repeated an earlier replan"))).toBe(true);
+  });
+
+  it("recovers failed work only after a declared replacement revision succeeds", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "roundtable-failure-replan-"));
+    dirs.push(dir);
+    let decisionCalls = 0;
+    const manager = new CoordinationManager({
+      file: join(dir, "runs.json"), groupBots: () => bots, coordinatorPolicy: policy,
+      decideAfterResults: true,
+      runCoordinatorTurn: async ({ purpose, prompt }) => {
+        if (purpose !== "decision") return { text: JSON.stringify([
+          { id: "work", title: "Work", description: "Fail once", role: "developer", botId: "dev" },
+        ]) };
+        decisionCalls += 1;
+        const context = JSON.parse(prompt);
+        if (decisionCalls === 1) {
+          expect(context.trigger).toBe("task_failed");
+          return { text: JSON.stringify({ action: "replan", rationale: "Use a fresh replacement task", resolvesTaskIds: ["work"], tasks: [
+            { title: "Replacement", description: "Complete the failed deliverable with a fresh approach", role: "developer", botId: "dev" },
+          ] }) };
+        }
+        expect(context.trigger).toBe("result_gap");
+        return { text: JSON.stringify({ action: "complete", rationale: "The replacement succeeded" }) };
+      },
+      createTask: (_bot, title) => ({ threadId: title }),
+      runBotTurn: async ({ prompt }) => {
+        if (prompt.includes("Fail once")) throw new Error("provider failed");
+        return { text: "replacement result" };
+      },
+    });
+
+    const run = await manager.start("room", "Complete recoverable work");
+    await vi.waitFor(() => expect(run.status).toBe("completed"));
+    expect(run.tasks).toHaveLength(2);
+    expect(run.tasks[0]).toEqual(expect.objectContaining({ status: "failed", resolvedByPlanRevision: 2 }));
+    expect(run.tasks[1]).toEqual(expect.objectContaining({ status: "completed", planRevision: 2, replanTrigger: "task_failed" }));
+    expect(run.decisions?.map((decision) => decision.action)).toEqual(["replan", "complete"]);
+    expect(buildCoordinationReport(run)).toContain("recovered by replan 2");
   });
 
   it("drains into pause before dispatching workers and resumes the frozen DAG", async () => {
@@ -616,5 +807,166 @@ describe("Coordinator domain", () => {
     manager.resume("room");
     await vi.waitFor(() => expect(manager.latest("room")?.status).toBe("completed"), { timeout: 5_000 });
     expect(calls).toBe(5);
+  });
+
+  it("persists active-run steering and applies it through a directed plan revision", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "roundtable-steering-"));
+    dirs.push(dir);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const decisionPrompts: string[] = [];
+    let workerCalls = 0;
+    const manager = new CoordinationManager({
+      file: join(dir, "runs.json"), groupBots: () => bots, coordinatorPolicy: policy,
+      decideAfterResults: true,
+      runCoordinatorTurn: async ({ purpose, prompt }) => {
+        if (purpose !== "decision") return { text: JSON.stringify([
+          { id: "draft", title: "Draft", description: "Create the initial deliverable", role: "developer", botId: "dev" },
+        ]) };
+        decisionPrompts.push(prompt);
+        return decisionPrompts.length === 1
+          ? { text: JSON.stringify({ action: "replan", rationale: "Apply the requested blue treatment", tasks: [
+            { id: "revise", title: "Revise color treatment", description: "Update the deliverable to blue", role: "developer", botId: "dev", dependsOn: ["draft"] },
+          ] }) }
+          : { text: JSON.stringify({ action: "complete", rationale: "The steered deliverable is complete" }) };
+      },
+      createTask: (_botId, title) => ({ threadId: title }),
+      runBotTurn: async () => {
+        workerCalls += 1;
+        if (workerCalls === 1) await gate;
+        return { text: workerCalls === 1 ? "Initial draft" : "Blue revision" };
+      },
+    });
+
+    const run = await manager.start("room", "Create a launch asset");
+    await vi.waitFor(() => expect(run.tasks[0]?.status).toBe("running"));
+    manager.steer("room", "Use blue instead of green", "message-1");
+    expect(run.steerings?.[0]).toEqual(expect.objectContaining({ status: "pending", messageId: "message-1" }));
+    release();
+    await vi.waitFor(() => expect(run.status).toBe("completed"));
+    expect(JSON.parse(decisionPrompts[0]!).trigger).toBe("user_steering");
+    expect(decisionPrompts[0]).toContain("Use blue instead of green");
+    expect(run.steerings?.[0]).toEqual(expect.objectContaining({ status: "applied", appliedPlanRevision: 2 }));
+    expect(run.tasks.at(-1)).toEqual(expect.objectContaining({ status: "completed", replanTrigger: "user_steering", planRevision: 2 }));
+  });
+
+  it("resumes an interrupted persisted task in the same Run and Channel session", async () => {
+    const sourceDir = mkdtempSync(join(tmpdir(), "roundtable-restart-source-"));
+    const recoveredDir = mkdtempSync(join(tmpdir(), "roundtable-restart-recovered-"));
+    dirs.push(sourceDir, recoveredDir);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const first = new CoordinationManager({
+      file: join(sourceDir, "runs.json"), groupBots: () => bots, coordinatorPolicy: policy,
+      runCoordinatorTurn: async () => ({ text: JSON.stringify([
+        { id: "build", title: "Build", description: "Create the artifact", role: "developer", botId: "dev" },
+      ]) }),
+      createTask: () => ({ threadId: "channel-dev-session" }),
+      runBotTurn: async () => { await gate; return { text: "old process" }; },
+    });
+    const original = await first.start("room", "Create a durable artifact");
+    await vi.waitFor(() => expect(original.tasks[0]?.status).toBe("running"));
+    copyFileSync(join(sourceDir, "runs.json"), join(recoveredDir, "runs.json"));
+
+    const calls: Array<{ threadId: string; prompt: string }> = [];
+    const recovered = new CoordinationManager({
+      file: join(recoveredDir, "runs.json"), groupBots: () => bots, coordinatorPolicy: policy,
+      runCoordinatorTurn: async () => ({ text: "unused" }),
+      createTask: () => { throw new Error("must reuse the persisted Channel session"); },
+      runBotTurn: async ({ threadId, prompt }) => { calls.push({ threadId, prompt }); return { text: "recovered result" }; },
+    });
+    const loaded = recovered.latest("room")!;
+    expect(loaded.status).toBe("running");
+    expect(loaded.tasks[0]).toEqual(expect.objectContaining({ status: "ready", threadId: "channel-dev-session", attempt: 2 }));
+    expect(loaded.recovery?.interruptedTaskIds).toEqual(["build"]);
+    expect(recovered.resumePersistedRuns()).toEqual([loaded]);
+    await vi.waitFor(() => expect(loaded.status).toBe("completed"));
+    expect(calls[0]?.threadId).toBe("channel-dev-session");
+    expect(calls[0]?.prompt).toContain("inspect current workspace and external state first");
+    expect(loaded.tasks[0]?.output).toBe("recovered result");
+    release();
+    await vi.waitFor(() => expect(original.status).toBe("completed"));
+  });
+
+  it("keeps a persisted paused Run frozen until the user resumes it", async () => {
+    const sourceDir = mkdtempSync(join(tmpdir(), "roundtable-paused-source-"));
+    const recoveredDir = mkdtempSync(join(tmpdir(), "roundtable-paused-recovered-"));
+    dirs.push(sourceDir, recoveredDir);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const first = new CoordinationManager({
+      file: join(sourceDir, "runs.json"), groupBots: () => bots, coordinatorPolicy: policy,
+      runCoordinatorTurn: async () => ({ text: JSON.stringify([
+        { id: "build", title: "Build", description: "Create the artifact", role: "developer", botId: "dev" },
+      ]) }),
+      createTask: () => ({ threadId: "paused-channel-session" }),
+      runBotTurn: async () => { await gate; return { text: "old process" }; },
+    });
+    const original = await first.start("room", "Create an artifact, then pause");
+    await vi.waitFor(() => expect(original.tasks[0]?.status).toBe("running"));
+    first.pause("room");
+    copyFileSync(join(sourceDir, "runs.json"), join(recoveredDir, "runs.json"));
+
+    let recoveredCalls = 0;
+    const recovered = new CoordinationManager({
+      file: join(recoveredDir, "runs.json"), groupBots: () => bots, coordinatorPolicy: policy,
+      runCoordinatorTurn: async () => ({ text: "unused" }),
+      createTask: () => { throw new Error("must reuse the persisted session"); },
+      runBotTurn: async () => { recoveredCalls += 1; return { text: "resumed result" }; },
+    });
+    const loaded = recovered.latest("room")!;
+    expect(loaded.status).toBe("paused");
+    recovered.resumePersistedRuns();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(loaded.status).toBe("paused");
+    expect(recoveredCalls).toBe(0);
+    recovered.resume("room");
+    await vi.waitFor(() => expect(loaded.status).toBe("completed"));
+    expect(recoveredCalls).toBe(1);
+    await first.cancel("room");
+    release();
+  });
+
+  it("does not let final synthesis race past newly arrived steering", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "roundtable-steering-synthesis-"));
+    dirs.push(dir);
+    let releaseSynthesis!: () => void;
+    const synthesisGate = new Promise<void>((resolve) => { releaseSynthesis = resolve; });
+    let synthesisCalls = 0;
+    let decisionCalls = 0;
+    const delivered: string[] = [];
+    const manager = new CoordinationManager({
+      file: join(dir, "runs.json"), groupBots: () => bots, coordinatorPolicy: policy,
+      decideAfterResults: true, synthesize: true,
+      runCoordinatorTurn: async ({ purpose }) => {
+        if (purpose === "synthesis") {
+          synthesisCalls += 1;
+          if (synthesisCalls === 1) await synthesisGate;
+          return { text: synthesisCalls === 1 ? "stale answer" : "answer with steering" };
+        }
+        if (purpose === "decision") {
+          decisionCalls += 1;
+          if (decisionCalls === 2) return { text: JSON.stringify({ action: "replan", rationale: "Apply steering", tasks: [
+            { id: "update", title: "Update", description: "Apply the new direction", role: "developer", botId: "dev", dependsOn: ["draft"] },
+          ] }) };
+          return { text: JSON.stringify({ action: "complete", rationale: "Evidence is sufficient" }) };
+        }
+        return { text: JSON.stringify([
+          { id: "draft", title: "Draft", description: "Create the draft", role: "developer", botId: "dev" },
+        ]) };
+      },
+      createTask: (_botId, title) => ({ threadId: title }),
+      runBotTurn: async () => ({ text: "worker result" }),
+      appendChannelMessage: (_groupId, text) => delivered.push(text),
+    });
+    const run = await manager.start("room", "Create an artifact");
+    await vi.waitFor(() => expect(synthesisCalls).toBe(1));
+    manager.steer("room", "Add the late requirement", "late-message");
+    releaseSynthesis();
+    await vi.waitFor(() => expect(run.status).toBe("completed"));
+    expect(synthesisCalls).toBe(2);
+    expect(run.answer).toBe("answer with steering");
+    expect(delivered).toEqual([expect.stringContaining("answer with steering")]);
+    expect(delivered[0]).not.toContain("stale answer");
   });
 });

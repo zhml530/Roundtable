@@ -158,12 +158,12 @@ export function Composer({
   // Unified target: a 1:1 bot thread or a room. In a room the @ picker
   // offers members plus @everyone; mentions constrain Coordinator assignment.
   const runActive = Boolean(group?.coordination && ["planning", "validating", "running", "paused", "reviewing"].includes(group.coordination.status));
-  const locked = setupLocked || runActive;
+  const locked = setupLocked;
   const busy = group ? Boolean(group.busyBotId) : Boolean(bot?.busy);
   // an engine with a live session takes a message INTO the running turn;
   // for those the composer never locks — the server steers instead of 409
   const canSteer =
-    !group && Boolean(bot) && state.instances.find((i) => i.instanceId === bot!.modelSelection.instanceId)?.capabilities?.queueing === true;
+    runActive || (!group && Boolean(bot) && state.instances.find((i) => i.instanceId === bot!.modelSelection.instanceId)?.capabilities?.queueing === true);
   // a pending approval blocks the prompt until it is answered
   const threadId = group?.threadId ?? bot?.threadId ?? "";
   // the VISIBLE branch only — an approval left on a branch you edited away
@@ -302,7 +302,7 @@ export function Composer({
     }
     const t = composeMessage(text, attachments);
     if (!t) return;
-    if (busy && group) {
+    if (busy && group && !runActive) {
       setQueued({ text: t, replyToId: replyTo?.id });
       setText("");
       setAttachments([]);
@@ -593,7 +593,7 @@ export function Composer({
                   : `${busyName} is working — sends when this turn finishes`
                 : group
                   ? runActive
-                    ? "A Coordinator run is active — follow progress above"
+                    ? "Steer this active Run — Coordinator applies it at the next safe plan boundary"
                     : `Give ${group.name} a goal — Coordinator assigns the work`
                   : `Message ${bot?.name ?? ""}`
           }
