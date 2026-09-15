@@ -14,6 +14,7 @@ import {
   type Message,
 } from "@/state/store";
 import { BotAvatar, CoordinatorAvatar, MausAvatar } from "./Avatar";
+import { ChannelAvatar } from "./ChannelAvatar";
 import { normalizeState } from "@/lib/mascot";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { Composer } from "./Composer";
@@ -688,39 +689,8 @@ export function GroupView({ group }: { group: Group }) {
     }
   };
 
-  // Match the channel list's bounded, overlapping member stack.
-  const memberMauses = members.slice(0, 2).map((b) => (
-    <span
-      key={b.id}
-      title={`${b.name}${group.busyBotId === b.id ? " — working…" : ""}`}
-      className={cn(
-        "relative inline-flex rounded-full",
-        group.busyBotId === b.id && "ring-2 ring-accent/50 ring-offset-1 ring-offset-app",
-      )}
-    >
-      <BotAvatar bot={b} state={normalizeState(b.mascotExpression) ?? "happy"} size={20} animated={false} />
-      {group.busyBotId === b.id && (
-        <span className="absolute -right-0.5 -top-0.5 size-2 rounded-full border border-app bg-accent" />
-      )}
-    </span>
-  ));
-  const hiddenMemberCount = Math.max(0, members.length - memberMauses.length);
-  const hiddenMembersBadge = hiddenMemberCount > 0 ? (
-    <span
-      title={`${hiddenMemberCount} more ${hiddenMemberCount === 1 ? "agent" : "agents"}`}
-      className="z-10 flex size-4 shrink-0 items-center justify-center rounded-full border border-hairline/40 bg-raised text-[8px] font-medium text-ink-secondary"
-    >
-      +{hiddenMemberCount}
-    </span>
-  ) : null;
-
   const memberStack = (
-    <span className="flex size-8 shrink-0 items-center justify-center overflow-hidden">
-      <span className="flex max-w-full items-center -space-x-3">
-        {memberMauses}
-        {hiddenMembersBadge}
-      </span>
-    </span>
+    <ChannelAvatar members={members} size={32} busyBotId={group.busyBotId} />
   );
 
   const platform = window.ogb?.platform;
@@ -736,7 +706,7 @@ export function GroupView({ group }: { group: Group }) {
       {membersOpen && !group.dm && (
         <ManageMembersPanel group={group} onClose={closeMembers} triggerRef={membersTriggerRef} />
       )}
-      {/* Header: static member mauses; a ring + dot marks the working bot. */}
+      {/* Header: shared channel avatar; a dot marks the working bot. */}
       <div
         className={cn(
           "flex items-center justify-between px-5",

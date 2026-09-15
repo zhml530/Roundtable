@@ -9,6 +9,8 @@ import { DATA_DIR } from "./config.ts";
 import type { ModelSelection } from "./contracts.ts";
 import { peerAllowKey } from "./peer-approval-key.ts";
 import { Store, type BotRecord } from "./store.ts";
+import { DEFAULT_BOT_PROFILES, DEFAULT_STARTER_CHANNEL } from "./default-bots.ts";
+import { parseBotProfilePatch } from "./bot-profile.ts";
 
 const selection = (): ModelSelection => ({ instanceId: "claude", model: "claude-sonnet-5" });
 
@@ -272,16 +274,106 @@ describe("Store", () => {
     expect(reloaded.bot(bot.id)?.resumeCursors).toEqual({ claude: "sess-abc", codex: "thread-xyz" });
   });
 
-  it("seedIfEmpty creates exactly one starter bot, once", () => {
+  it("seedIfEmpty creates the three starter roles with valid prompts and default models, once", () => {
     const store = new Store(selection);
     store.seedIfEmpty();
-    expect(store.bots).toHaveLength(1);
+    expect(store.bots.map((bot) => bot.name)).toEqual(["Reviewer", "Planner", "Executor"]);
+    for (const [index, bot] of store.bots.entries()) {
+      expect(bot).toMatchObject(DEFAULT_BOT_PROFILES[index]!);
+      expect(bot.description.trim().length).toBeGreaterThan(0);
+      expect(parseBotProfilePatch({ name: bot.name, title: bot.title, description: bot.description }).ok).toBe(true);
+      expect(bot.modelSelection).toEqual(selection());
+      expect(store.messagesFor(bot.threadId)).toHaveLength(2);
+    }
+    const ids = store.bots.map((bot) => bot.id);
     store.seedIfEmpty();
-    expect(store.bots).toHaveLength(1);
+    expect(store.bots.map((bot) => bot.id)).toEqual(ids);
 
     const reloaded = new Store(selection);
     reloaded.seedIfEmpty();
-    expect(reloaded.bots).toHaveLength(1);
+    expect(reloaded.bots.map((bot) => bot.id)).toEqual(ids);
+    expect(reloaded.bots).toMatchObject(store.bots);
+  });
+
+  it("seedIfEmpty creates one ready starter channel with the three bots and a durable welcome", () => {
+    const store = new Store(selection);
+    store.seedIfEmpty();
+    expect(store.groups).toHaveLength(1);
+    const group = store.groups[0]!;
+    expect(group).toMatchObject({
+      name: "Getting Started",
+      memberIds: store.bots.map((bot) => bot.id),
+      bulletin: DEFAULT_STARTER_CHANNEL.bulletin,
+      setupCompletedAt: expect.any(Number),
+    });
+    expect(group.dm).toBeUndefined();
+    expect(group.cwd).toBeUndefined();
+    const messages = store.messagesFor(group.threadId);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      role: "bot",
+      author: "coordinator",
+      kind: "text",
+      text: DEFAULT_STARTER_CHANNEL.welcome,
+    });
+    expect(messages[0].from).toBeUndefined();
+    for (const name of ["Planner", "Executor", "Reviewer"]) {
+      expect(messages[0].text).toContain(`@${name}`);
+    }
+
+    store.seedIfEmpty();
+    const reloaded = new Store(selection);
+    reloaded.seedIfEmpty();
+    expect(reloaded.groups).toEqual([group]);
+    expect(reloaded.messagesFor(group.threadId)).toEqual(messages);
+  });
+
+  it("seedIfEmpty leaves existing bots, channels, and their edited prompts untouched", () => {
+    const store = new Store(selection);
+    const existing = store.createBot({
+      name: "My helper",
+      title: "Custom role",
+      description: "Keep my instructions.",
+      modelSelection: { instanceId: "copilot", model: "gpt-6-astra" },
+    });
+    const channel = store.createGroup("My channel", [existing.id]);
+    store.patchGroup(channel.id, { bulletin: "My own channel instructions." });
+    store.seedIfEmpty();
+    expect(store.bots).toEqual([existing]);
+    expect(store.groups).toEqual([channel]);
+    const reloaded = new Store(selection);
+    reloaded.seedIfEmpty();
+    expect(reloaded.bots).toMatchObject([existing]);
+    expect(reloaded.groups).toEqual([channel]);
+  });
+
+  it("seedIfEmpty preserves an edited starter channel and does not recreate it after deletion", () => {
+    const store = new Store(selection);
+    store.seedIfEmpty();
+    const group = store.groups[0]!;
+    store.patchGroup(group.id, { name: "My team", bulletin: "My instructions." });
+    const reloaded = new Store(selection);
+    reloaded.seedIfEmpty();
+    expect(reloaded.groups).toEqual([group]);
+    reloaded.deleteGroup(group.id);
+    const afterDeletion = new Store(selection);
+    afterDeletion.seedIfEmpty();
+    expect(afterDeletion.groups).toEqual([]);
+    expect(afterDeletion.bots).toHaveLength(3);
+  });
+
+  it("seedIfEmpty does not recreate a removed starter bot or overwrite an edited starter prompt", () => {
+    const store = new Store(selection);
+    store.seedIfEmpty();
+    const reviewer = store.bots.find((bot) => bot.name === "Reviewer")!;
+    const planner = store.bots.find((bot) => bot.name === "Planner")!;
+    store.patchBot(reviewer.id, { description: "My own review rules." });
+    store.deleteBot(planner.id);
+    const reloaded = new Store(selection);
+    reloaded.seedIfEmpty();
+    expect(reloaded.bots).toHaveLength(2);
+    expect(reloaded.bot(planner.id)).toBeNull();
+    expect(reloaded.bot(reviewer.id)?.description).toBe("My own review rules.");
   });
 
   it("chains appended messages and keeps the newest as active leaf", () => {

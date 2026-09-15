@@ -321,11 +321,26 @@ describe("harness HTTP API", () => {
     expect((await fetch(`${BASE}/api/health`)).status).toBe(200);
   });
 
-  it("seeds one starter bot with its greeting", async () => {
+  it("seeds the default role bots and their shared getting-started channel", async () => {
     const { status, body } = await api("GET", "/api/bots");
     expect(status).toBe(200);
-    expect(body.bots.length).toBeGreaterThanOrEqual(1);
-    expect(body.bots[0].messages.length).toBeGreaterThanOrEqual(2);
+    for (const name of ["Reviewer", "Planner", "Executor"]) {
+      const bot = body.bots.find((candidate: { name: string }) => candidate.name === name);
+      expect(bot).toBeDefined();
+      expect(bot.description.length).toBeGreaterThan(0);
+      expect(bot.messages.length).toBeGreaterThanOrEqual(2);
+    }
+    const channel = body.groups.find((group: { name: string }) => group.name === "Getting Started");
+    expect(channel).toBeDefined();
+    expect(channel.memberIds).toHaveLength(3);
+    const members = body.bots.filter((bot: { id: string }) => channel.memberIds.includes(bot.id));
+    expect(members.map((bot: { name: string }) => bot.name).sort()).toEqual(["Executor", "Planner", "Reviewer"]);
+    expect(channel.setupCompletedAt).toEqual(expect.any(Number));
+    expect(channel.messages[0]).toMatchObject({
+      author: "coordinator",
+      kind: "text",
+      text: expect.stringContaining("Welcome to your starter team"),
+    });
   });
 
   it("projects privacy-safe live team-map metadata", async () => {
@@ -921,9 +936,7 @@ describe("harness HTTP API", () => {
       const imported = await api("POST", "/api/teams/import", exported.body);
       expect(imported.status).toBe(201);
       // the originals still exist, so every member arrives visibly numbered
-      // rather than wearing a name that already resolves to another bot. The
-      // starter name is intentionally random, so it can duplicate a member
-      // name and advance that member to the next available suffix.
+      // rather than wearing a name that already resolves to another bot.
       const importedNames = imported.body.bots.map((bot: { name: string }) => bot.name);
       const namesBefore = new Set(stateBefore.bots.map((bot: { name: string }) => bot.name.toLowerCase()));
       expect(importedNames).toHaveLength(visibleNames.length);

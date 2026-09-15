@@ -45,25 +45,28 @@ export const CURSOR_SILHOUETTE: CursorSilhouette = {
   anchor: { x: 93, y: 101, scale: 0.74 },
 }
 
-/**
- * Roundtable's default mascot: a compact circular AI halo. Four simple colour
- * bands suggest an interwoven assistant mark while the uninterrupted centre
- * keeps expressions readable at the 24–44px sizes used in bot lists.
- */
+/** Original robot artwork; the dark visor keeps animated faces legible at small sizes. */
 export const DEFAULT_SILHOUETTE: CursorSilhouette = {
-  name: "roundtable halo",
+  name: "roundtable robot",
   fit: "",
   body: `
-    <circle cx="114" cy="114" r="105" fill="{{RIBBON_DEEP}}"/>
-    <path fill="{{RIBBON_A}}" d="M114 9A105 105 0 0 0 9 114H47A67 67 0 0 1 114 47Z"/>
-    <path fill="{{RIBBON_B}}" d="M114 9A105 105 0 0 1 219 114H181A67 67 0 0 0 114 47Z"/>
-    <path fill="{{RIBBON_C}}" d="M219 114A105 105 0 0 1 114 219V181A67 67 0 0 0 181 114Z"/>
-    <path fill="{{GRADIENT}}" d="M114 219A105 105 0 0 1 9 114H47A67 67 0 0 0 114 181Z"/>
-    <circle cx="114" cy="114" r="64" fill="{{GRADIENT}}"/>
-    <path fill="#ffffff" fill-opacity=".16" d="M56 93A63 63 0 0 1 151 55C157 59 154 67 147 65A55 55 0 0 0 65 98C62 105 53 101 56 93Z"/>
+    <rect x="108" y="28" width="12" height="36" rx="6" fill="{{RIBBON_DEEP}}"/>
+    <circle cx="114" cy="24" r="14" fill="{{GRADIENT}}"/>
+    <circle cx="110" cy="20" r="4" fill="#ffffff" fill-opacity=".8"/>
+    <rect x="14" y="100" width="28" height="48" rx="14" fill="{{RIBBON_DEEP}}"/>
+    <rect x="186" y="100" width="28" height="48" rx="14" fill="{{RIBBON_DEEP}}"/>
+    <rect x="88" y="183" width="52" height="25" rx="12" fill="{{RIBBON_DEEP}}"/>
+    <rect x="30" y="52" width="168" height="142" rx="48" fill="{{GRADIENT}}"/>
+    <path d="M48 83Q57 63 82 63H144" fill="none" stroke="#ffffff" stroke-opacity=".4" stroke-width="6" stroke-linecap="round"/>
+    <rect x="46" y="76" width="136" height="98" rx="32" fill="#142539"/>
+    <path d="M59 99Q63 86 80 86H147" fill="none" stroke="#ffffff" stroke-opacity=".12" stroke-width="4" stroke-linecap="round"/>
+    <ellipse cx="65" cy="145" rx="9" ry="5" fill="#ff9cab" fill-opacity=".8"/>
+    <ellipse cx="163" cy="145" rx="9" ry="5" fill="#ff9cab" fill-opacity=".8"/>
+    <circle cx="106" cy="199" r="3" fill="#ffffff" fill-opacity=".9"/>
+    <circle cx="122" cy="199" r="3" fill="#ffffff" fill-opacity=".45"/>
   `,
-  clip: '<circle cx="114" cy="114" r="64"/>',
-  anchor: { x: 114, y: 106, scale: 0.51 },
+  clip: '<rect x="46" y="76" width="136" height="98" rx="32"/>',
+  anchor: { x: 114, y: 119, scale: 0.62 },
 }
 
 export const DEFAULT_GRADIENT: [string, string, string] = ["#9FE6B5","#3FAE6E","#1C7A4C"]

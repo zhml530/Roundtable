@@ -1,4 +1,4 @@
-// Bot avatar — Roundtable's animated ribbon mascot (CursorAvatar.tsx), wrapped
+// Bot avatar — Roundtable's animated robot mascot (CursorAvatar.tsx), wrapped
 // in the app's historical MausAvatar API so no call site changes: per-bot
 // color becomes a body gradient, the app's one-shot motion beats borrow the
 // face/state for a moment, and the eyes follow the pointer. The previous
@@ -225,6 +225,8 @@ function MausAvatarComponent(
 export const MausAvatar = memo(forwardRef(MausAvatarComponent));
 
 export type BotAvatarProps = Omit<MausAvatarProps, "color"> & {
+  /** Composite channel avatars clip each image within their own tile. */
+  imageShape?: "circle" | "square";
   bot: {
     name?: string;
     color: MausColor;
@@ -238,7 +240,7 @@ export type BotAvatarProps = Omit<MausAvatarProps, "color"> & {
  * values and images that fail to load both fall back to the animated mascot,
  * so an old/corrupt profile can never leave a broken-image icon in the app.
  */
-export function BotAvatar({ bot, size = 44, label, ...mascotProps }: BotAvatarProps) {
+export function BotAvatar({ bot, size = 44, label, imageShape = "circle", ...mascotProps }: BotAvatarProps) {
   const profile = botAvatarProfile(bot);
   const [imageFailed, setImageFailed] = useState(false);
 
@@ -264,7 +266,7 @@ export function BotAvatar({ bot, size = 44, label, ...mascotProps }: BotAvatarPr
       draggable={false}
       onError={() => setImageFailed(true)}
       className="block shrink-0 bg-raised object-cover"
-      style={{ width: size, height: size, borderRadius: "50%" }}
+      style={{ width: size, height: size, borderRadius: imageShape === "square" ? 0 : "50%" }}
     />
   );
 }

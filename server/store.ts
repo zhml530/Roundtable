@@ -12,6 +12,7 @@ import * as mdb from "./message-db.ts";
 import { workspaceDir } from "./workspace.ts";
 import { newId, type CloudBackend, type ModelSelection, type ThreadId } from "./contracts.ts";
 import { pickBotName } from "./names.ts";
+import { DEFAULT_BOT_PROFILES, DEFAULT_STARTER_CHANNEL } from "./default-bots.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { botAvatarProfile, type BotAvatarCrop } from "../shared/bot-avatar.ts";
 
@@ -1145,10 +1146,21 @@ export class Store {
     return bot;
   }
 
-  /** First-run seed: one bot so the app never opens empty — it gets a
-   * random friendly name like every other bot. */
+  /** Seed the starter roles without changing an existing fleet. */
   seedIfEmpty() {
     if (this.bots.length) return;
-    this.createBot();
+    // createBot prepends, so seed in reverse to retain the profile order.
+    for (const profile of [...DEFAULT_BOT_PROFILES].reverse()) this.createBot(profile);
+    const group = this.createGroup(DEFAULT_STARTER_CHANNEL.name, this.bots.map((bot) => bot.id));
+    this.patchGroup(group.id, {
+      bulletin: DEFAULT_STARTER_CHANNEL.bulletin,
+      setupCompletedAt: Date.now(),
+    });
+    this.appendMessage(group.threadId, {
+      role: "bot",
+      author: "coordinator",
+      kind: "text",
+      text: DEFAULT_STARTER_CHANNEL.welcome,
+    });
   }
 }

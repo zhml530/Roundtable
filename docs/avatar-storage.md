@@ -1,5 +1,16 @@
 # Avatar attachment lifecycle
 
+## Default avatars
+
+Bots without a custom image use the original SVG robot artwork in
+`src/components/CursorAvatar.tsx`. The shared avatar renderer applies each bot's
+color, expression, and animation in lists, chats, profile previews, and composite
+channel avatars. No download, generated attachment, or profile migration is
+needed. Uploaded images remain unchanged; choosing the mascot or removing the
+custom image restores the robot.
+
+## Custom images
+
 Bot avatars intentionally reuse the image attachment store. Upload and GPT
 Image output therefore get the same size checks, owner-only filesystem
 permissions, immutable serving URL, and raster-only MIME allowlist as message

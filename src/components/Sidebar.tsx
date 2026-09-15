@@ -32,6 +32,7 @@ import {
 import { api, useStore, formatTime, visibleMessages, type Bot, type Group } from "@/state/store";
 
 import { BotAvatar, InitialsAvatar, STANDARD_BOT_AVATAR_SIZE } from "./Avatar";
+import { ChannelAvatar } from "./ChannelAvatar";
 import { stateForBot } from "@/lib/mascot";
 import { useUpdaterState } from "@/lib/updater";
 import { cn } from "@/lib/cn";
@@ -194,40 +195,6 @@ function conversationSelectionClass(selected: boolean): string {
     : "hover:bg-raised/50";
 }
 
-/** Room avatar: two overlapping mauses plus a count, bounded to one bot slot. */
-function StackedMauses({ members, density }: { members: Bot[]; density: SidebarDensity }) {
-  const iconOnly = density === "icons";
-  const slotSize = iconOnly ? "size-9" : density === "compact" ? "size-7" : "size-8";
-  const singleSize = iconOnly ? 36 : density === "compact" ? 28 : 32;
-  if (members.length <= 1) {
-    const b = members[0];
-    return (
-      <div className={cn("flex shrink-0 items-center justify-center", slotSize)}>
-        {b ? <BotAvatar bot={b} state="happy" size={singleSize} animated={false} /> : <Users size={20} className="text-ink-secondary" />}
-      </div>
-    );
-  }
-  const shown = members.slice(0, 2);
-  const extra = members.length - shown.length;
-  const avatarSize = iconOnly ? 22 : density === "compact" ? 18 : 20;
-  const overlap = iconOnly ? "-space-x-[13px]" : density === "compact" ? "-space-x-[11px]" : "-space-x-3";
-  const countSize = iconOnly ? "size-4 text-[8px]" : density === "compact" ? "size-3.5 text-[8px]" : "size-4 text-[8px]";
-  return (
-    <div className={cn("flex shrink-0 items-center justify-center overflow-hidden", slotSize)}>
-      <div className={cn("flex max-w-full items-center", overlap)}>
-        {shown.map((b) => (
-          <BotAvatar key={b.id} bot={b} state="happy" size={avatarSize} animated={false} />
-        ))}
-        {extra > 0 && (
-          <span className={cn("z-10 flex shrink-0 items-center justify-center rounded-full border border-hairline/40 bg-raised font-medium text-ink-secondary", countSize)}>
-            +{extra}
-          </span>
-        )}
-      </div>
-    </div>
-  );
-}
-
 function GroupListItem({
   group,
   density,
@@ -274,7 +241,11 @@ function GroupListItem({
       title={density === "icons" ? group.name : undefined}
       aria-label={density === "icons" ? group.name : undefined}
     >
-      <StackedMauses members={members} density={density} />
+      <ChannelAvatar
+        members={members}
+        size={density === "icons" ? 36 : density === "compact" ? 28 : 32}
+        busyBotId={group.busyBotId}
+      />
       <div className={cn("min-w-0 flex-1", density === "icons" && "hidden")}>
         <div className="flex items-center justify-between gap-2">
           <span className="truncate text-[15px] font-semibold text-ink">{group.name}</span>
