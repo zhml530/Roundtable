@@ -108,6 +108,8 @@ export function MessageViewport<T extends MessageViewportItem>({
 }) {
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const [atBottom, setAtBottom] = useState(true);
+  const [atTop, setAtTop] = useState(false);
+  const [hasMeasuredItems, setHasMeasuredItems] = useState(false);
   const [indexState, setIndexState] = useState(() => ({
     firstItemIndex: MESSAGE_VIEWPORT_INDEX_BASE,
     firstKey: items[0]?.key,
@@ -119,6 +121,15 @@ export function MessageViewport<T extends MessageViewportItem>({
       firstKey: items[0]?.key,
     });
   }
+
+  useEffect(() => {
+    // Collapsed tool runs can leave both edges in view across several pages.
+    // Keep filling after each load, but wait for the initial probe to be
+    // measured so a long transcript is not drained before its bottom scroll.
+    if (atTop && atBottom && (hasMeasuredItems || items.length === 0) && canLoadEarlier && !loading && !error) {
+      void onLoadEarlier();
+    }
+  }, [atTop, atBottom, hasMeasuredItems, items.length, canLoadEarlier, loading, error, onLoadEarlier]);
 
   useEffect(() => {
     // Virtuoso remembers whether followOutput was active before the footer
@@ -160,8 +171,10 @@ export function MessageViewport<T extends MessageViewportItem>({
         atBottomStateChange={setAtBottom}
         atTopThreshold={160}
         atTopStateChange={(atTop) => {
+          setAtTop(atTop);
           if (atTop && canLoadEarlier && !loading && !error) void onLoadEarlier();
         }}
+        itemsRendered={(rendered) => setHasMeasuredItems(rendered.some((item) => item.size > 0))}
         components={VIEWPORT_COMPONENTS}
         computeItemKey={(_index, item) => item.key}
         context={context}
