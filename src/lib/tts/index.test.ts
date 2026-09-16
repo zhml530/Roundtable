@@ -24,22 +24,15 @@ function json(body: unknown): Response {
   });
 }
 
-function bytes(body: BodyInit | ArrayBuffer | null): Uint8Array {
-  if (typeof body === "string") return new TextEncoder().encode(body);
-  if (body instanceof Uint8Array) return body;
-  if (body instanceof ArrayBuffer) return new Uint8Array(body);
-  return new Uint8Array();
-}
-
-function stubBridge(handler: (request: { path: string; body?: string | Uint8Array }) => Promise<Response>): void {
+function stubBridge(handler: (request: { path: string; body?: string }) => Promise<Response>): void {
   vi.stubGlobal("ogb", {
     orchestration: {
-      request: vi.fn(async (request) => {
+      request: vi.fn(async (request: { path: string; body?: string }) => {
         const response = await handler(request);
         return {
           status: response.status,
           headers: Object.fromEntries(response.headers.entries()),
-          body: bytes(await response.arrayBuffer()),
+          body: new Uint8Array(await response.arrayBuffer()),
         };
       }),
       onEvent: vi.fn(() => () => {}),
@@ -93,7 +86,7 @@ describe("Speaker lifecycle", () => {
   it("passes a per-bot voice through preparation and synthesis", async () => {
     const bodies: unknown[] = [];
     stubBridge(async ({ path, body }) => {
-      bodies.push(JSON.parse(typeof body === "string" ? body : new TextDecoder().decode(body)));
+      bodies.push(JSON.parse(body ?? "{}"));
       return path.endsWith("/prepare")
         ? json({ ready: true, utterances: ["Distinct voice."] })
         : new Response(new Blob(["mp3"]), { status: 200 });
