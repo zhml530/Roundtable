@@ -25,6 +25,7 @@ export function ComposerAttachments({
   onAdd,
   onRemove,
   allowImages = true,
+  allowFiles = true,
   notice,
   onNotice,
 }: {
@@ -32,6 +33,7 @@ export function ComposerAttachments({
   onAdd: (attachments: Attachment[]) => void;
   onRemove: (id: string) => void;
   allowImages?: boolean;
+  allowFiles?: boolean;
   notice: string | null;
   onNotice: (notice: string | null) => void;
 }) {
@@ -65,6 +67,10 @@ export function ComposerAttachments({
       e.preventDefault();
       depth.current = 0;
       setDragging(false);
+      if (!allowFiles) {
+        onNotice("The selected agent does not accept local file or image attachments.");
+        return;
+      }
       const files = Array.from(e.dataTransfer?.files ?? []);
       // Same intake the attach button uses: a dropped file and a picked one
       // must not appear in a different order.
@@ -91,14 +97,14 @@ export function ComposerAttachments({
       window.removeEventListener("dragover", onOver);
       window.removeEventListener("drop", onDrop);
     };
-  }, [onAdd, allowImages, onNotice]);
+  }, [onAdd, allowImages, allowFiles, onNotice]);
 
   return (
     <>
       {dragging && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-10">
           <div className="rounded-2xl border-2 border-dashed border-accent/70 bg-panel/90 px-8 py-6 text-[14px] font-medium text-ink shadow-2xl">
-            Drop to attach — the bot gets the file path
+            {allowFiles ? "Drop to attach — the bot gets the file path" : "The selected agent does not accept local file or image attachments."}
           </div>
         </div>
       )}

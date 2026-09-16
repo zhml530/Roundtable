@@ -109,8 +109,11 @@ export function autoVerdict(
   context?: {
     /** the turn was started by an outside event, with nobody at the keyboard */
     unattended?: boolean;
+    /** A governed provider does not accept standing approval grants. */
+    explicitApproval?: boolean;
   },
 ): AutoVerdict {
+  if (context?.explicitApproval) return { approve: null, source: "no-grant", rule: "explicit-approval-required" };
   // the guards outrank the grants, so an "always allow" can never widen
   // into them
   const destructive = matchFirst(DESTRUCTIVE, summary) ?? matchFirst(DESTRUCTIVE, tool);

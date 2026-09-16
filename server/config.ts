@@ -397,6 +397,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     droid: { driver: "droidAgent" },
     cursor: { driver: "cursorAgent" },
     copilot: { driver: "copilotAgent" },
+    bugflow: { driver: "bugflowAgent" },
     claude: { driver: "claudeAgent" },
     codex: { driver: "codex" },
     antigravity: { driver: "antigravityAgent" },
@@ -418,6 +419,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
   const PRODUCT_FLEET_ADDITIONS = {
     cursor: { driver: "cursorAgent" },
     copilot: { driver: "copilotAgent" },
+    bugflow: { driver: "bugflowAgent" },
     openaiCompat: { driver: "openai-compat" },
     ...CUSTOM_ONLY,
   } as const;

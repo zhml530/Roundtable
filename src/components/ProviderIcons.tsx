@@ -1,5 +1,5 @@
 // Provider brand marks, keyed by driver kind. Official logos only.
-import { Github, Monitor, Waypoints } from "lucide-react";
+import { Bug, Github, Monitor, Waypoints } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { HermesMark } from "./HermesMark";
 import { CursorMark } from "./CursorMark";
@@ -148,6 +148,8 @@ export function ProviderMark({ driverKind, size, className }: IconProps & { driv
       return <CursorMark size={size} className={className} />;
     case "copilotAgent":
       return <Github size={size} className={cn("text-ink", className)} />;
+    case "bugflowAgent":
+      return <Bug size={size} className={cn("text-accent", className)} aria-hidden />;
     case "antigravityAgent":
       return <AntigravityMark size={size} className={className} />;
     case "opencodeGo":

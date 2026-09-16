@@ -152,7 +152,10 @@ function CustomPicker({ instance, cliDefault, onClose, onSaved }: {
         </div>
       )}
       {probe?.ok && probe.version && (
-        <div className="text-[12px] text-success">Test passed — {probe.version}</div>
+        <div className="text-[12px] text-success">
+          {instance.driverKind === "bugflowAgent" ? "CLI found" : "Test passed"} — {probe.version}
+          {instance.driverKind === "bugflowAgent" && ". This does not confirm host readiness or authentication."}
+        </div>
       )}
       {error && <div role="alert" className="text-[12px] text-danger">{error}</div>}
       <div className="flex justify-end gap-2">

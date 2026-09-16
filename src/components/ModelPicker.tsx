@@ -198,7 +198,7 @@ export function ModelPicker({
       ? needsCli(railInstance)
       : needsCli(railInstance) || needsSignIn(railInstance)
     : false;
-  const canOpenCustom = Boolean(railInstance && !needsCli(railInstance));
+  const canOpenCustom = Boolean(railInstance && railInstance.capabilities?.customModels !== false && !needsCli(railInstance));
   const canReturnToOfficial = official.length > 0 && !isCustomOnly(railInstance);
 
   const renderRow = (option: ModelOption) => (
@@ -442,7 +442,7 @@ export function ModelPicker({
                   </>
                 )}
 
-                {pane === "main" && (
+                {pane === "main" && railInstance.capabilities?.customModels !== false && (
                   <button
                     type="button"
                     aria-label={

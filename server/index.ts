@@ -152,6 +152,9 @@ const registry = new ProviderRegistry(BUILT_IN_DRIVERS, {
   catalogFile: join(DATA_DIR, "provider-catalog.json"),
 });
 await registry.load(instanceConfigs(cfg));
+const requiresExplicitApprovals = (instanceId: string) =>
+  cfg.instances?.[instanceId]?.driver === "bugflowAgent"
+  || registry.get(instanceId)?.adapter.capabilities.explicitApprovals === true;
 const bundledSkills = loadBundledSkills();
 const availableSkills = () => mergeSkills(bundledSkills, loadUserSkills(join(DATA_DIR, "skills")));
 
@@ -831,9 +834,13 @@ bus.subscribe((event: RuntimeEvent) => {
       // whole point of asking is that a person decides — and anything that
       // looks destructive stops even in auto mode.
       const asker = bot ?? (speaker ? store.bot(speaker.botId) : undefined);
+      const askingInstance = event.providerInstanceId
+        ? registry.get(event.providerInstanceId)
+        : asker ? registry.get(asker.modelSelection.instanceId) : undefined;
+      const explicitApproval = event.provider === "bugflowAgent" || askingInstance?.adapter.capabilities.explicitApprovals === true;
       const unattended = permission && asker && event.requestId ? isUnattended(asker.id) : false;
       const verdict = permission && asker && event.requestId
-        ? autoVerdict(asker, event.tool, event.summary, { unattended })
+        ? autoVerdict(asker, event.tool, event.summary, { unattended, explicitApproval })
         : null;
       if (verdict?.approve && asker && event.requestId) {
         const settled = verdict.approve;
@@ -916,7 +923,7 @@ bus.subscribe((event: RuntimeEvent) => {
           // the exact grant "always allow" would remember, decided here so
           // client and server can never derive it differently
           allowKey:
-            permission ? approvalKey(event.tool, event.summary) : undefined,
+            permission && !explicitApproval ? approvalKey(event.tool, event.summary) : undefined,
           // in auto mode a card can only mean the guard stopped it — say so
           held:
             permission && asker?.autoApprove
@@ -1387,6 +1394,10 @@ async function startTurn(
     );
   }
   const instanceId = instance.instanceId;
+  if (instance.adapter.capabilities.files === false && /<attached-(?:file|image)\b/i.test(text)) {
+    const message = "This agent does not accept local file or image attachments.";
+    throw Object.assign(new Error(message), { status: 400 });
+  }
   const model = opts?.runOn === "cloud" ? instance.models.default : bot.modelSelection.model;
   // a cloud routine borrows the instance default model, so it borrows no
   // per-bot effort either
@@ -3976,6 +3987,9 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such bot" });
       if (!allowKey) return json(res, 400, { error: "allowKey required" });
+      if (requiresExplicitApprovals(bot.modelSelection.instanceId)) {
+        return json(res, 400, { error: "This agent requires explicit approval for each action; standing grants are not supported." });
+      }
       const pending = store.messagesFor(bot.threadId).some((message) =>
         message.card?.requestId &&
         !message.card.answered &&
@@ -4012,8 +4026,18 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
       // safe — startTurn refuses to run a turn on an unavailable instance
       // anyway, so an unverifiable level never reaches a CLI.
       const nextSelection = (body as Record<string, unknown>).modelSelection as
-        | { instanceId?: string; effort?: string }
+        | { instanceId?: string; effort?: string; model?: string }
         | undefined;
+      const targetInstanceId = nextSelection?.instanceId ?? existingBot?.modelSelection.instanceId ?? "";
+      const explicitApprovals = requiresExplicitApprovals(targetInstanceId);
+      if (explicitApprovals && (body.autoApprove === true || (Array.isArray(body.alwaysAllow) && body.alwaysAllow.length))) {
+        return json(res, 400, { error: "This agent requires explicit approval for each action; auto-approval and standing grants are not supported." });
+      }
+      const targetInstance = registry.get(targetInstanceId);
+      if (targetInstance?.adapter.capabilities.customModels === false
+        && nextSelection?.model !== undefined && nextSelection.model !== targetInstance.models.default) {
+        return json(res, 400, { error: "This agent controls its model; use its default model." });
+      }
       if (nextSelection?.effort !== undefined) {
         if (!isEffortLevel(nextSelection.effort)) {
           return json(res, 400, { error: `effort "${String(nextSelection.effort)}" is not recognized` });
@@ -4096,6 +4120,10 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
           return json(res, 400, { error: "alwaysAllow must be a list of tool keys" });
         }
         patch.alwaysAllow = [...new Set(body.alwaysAllow as string[])].slice(0, 200);
+      }
+      if (explicitApprovals) {
+        patch.autoApprove = false;
+        patch.alwaysAllow = [];
       }
       const bot = store.patchBot(m[1], patch);
       if (!bot) return json(res, 404, { error: "no such bot" });

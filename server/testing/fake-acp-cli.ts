@@ -123,6 +123,10 @@ if (argv.includes("--help")) {
 // it later spawns for ACP. Answer those without entering the JSON-RPC loop
 // so catalog/auth tests do not hang on stdin.
 if (argv[0] === "status" || argv[0] === "whoami") {
+  if (process.env.FAKE_ACP_BUGFLOW_STATUS) {
+    console.log(JSON.stringify({ state: process.env.FAKE_ACP_BUGFLOW_STATUS, message: "Fake local host status", version: "0.1.0" }));
+    process.exit(0);
+  }
   const authenticated = process.env.FAKE_ACP_AUTH !== "0";
   console.log(JSON.stringify({ isAuthenticated: authenticated }));
   process.exit(0);
@@ -173,6 +177,7 @@ const configCalls: Array<{ method: string; params: unknown }> = [];
 // pending server→client permission request id → resolver
 let pendingPermissionId: number | null = null;
 let onPermissionAnswered: (() => void) | null = null;
+let hangingPromptId: unknown;
 
 // ask-peer mode: the "agents" MCP server entry from session/new's mcpServers
 type McpEntry = { command: string; args?: string[]; env?: Array<{ name: string; value: string }> };
@@ -266,6 +271,9 @@ process.stdin.on("data", (c) => {
 function handle(msg: any) {
   // client's response to our permission request
   if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined) && msg.id === pendingPermissionId) {
+    if (process.env.FAKE_ACP_DUMP) {
+      writeFileSync(`${process.env.FAKE_ACP_DUMP}.permission.json`, JSON.stringify(msg.result));
+    }
     pendingPermissionId = null;
     onPermissionAnswered?.();
     return;
@@ -280,7 +288,11 @@ function handle(msg: any) {
         process.exit(3);
       }
       const authMethods = mode === "no-auth" ? [] : [{ id: "cached_token" }];
-      result(msg.id, { protocolVersion: 1, authMethods, _meta: { modelState: { currentModelId: "fake-acp-model" } } });
+      result(msg.id, {
+        protocolVersion: 1, authMethods,
+        agentCapabilities: { loadSession: mode !== "load-unsupported" },
+        _meta: { modelState: { currentModelId: "fake-acp-model" } },
+      });
       break;
     }
     case "authenticate":
@@ -314,9 +326,22 @@ function handle(msg: any) {
       break;
     }
     case "session/load": {
+      if (mode === "load-fails") {
+        return out({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: "Session not found" } });
+      }
+      if (process.env.FAKE_ACP_DUMP) {
+        writeFileSync(`${process.env.FAKE_ACP_DUMP}.load.json`, JSON.stringify(msg.params));
+      }
       const opts = configOptions();
       const mdls = sessionModels();
-      result(msg.id, { ...(opts ? { configOptions: opts } : {}), ...(mdls ? { models: mdls } : {}) });
+      if (mode === "load-replay") {
+        out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: "historical text" } } } });
+        out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "tool_call", toolCallId: "historical-tool", title: "historical tool" } } });
+      }
+      result(msg.id, {
+        ...(mode === "load-mismatch" ? { sessionId: "wrong-session" } : {}),
+        ...(opts ? { configOptions: opts } : {}), ...(mdls ? { models: mdls } : {}),
+      });
       break;
     }
     // per-session settings (droid sets model/autonomy here, not via argv).
@@ -371,7 +396,11 @@ function handle(msg: any) {
       if (process.env.FAKE_ACP_DUMP) {
         writeFileSync(`${process.env.FAKE_ACP_DUMP}.prompt.json`, JSON.stringify(msg.params.prompt));
       }
-      if (mode === "hang") {
+      if (mode === "hang" || mode === "cancel-result") {
+        hangingPromptId = msg.id;
+        if (mode === "cancel-result") {
+          out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: "working" } } } });
+        }
         // never resolve the prompt — lets tests exercise interrupt
         setInterval(() => {}, 1_000);
         return;
@@ -465,9 +494,12 @@ function handle(msg: any) {
           });
         return;
       }
+      if (mode === "load-replay") {
+        out({ jsonrpc: "2.0", method: "session/update", params: { _meta: { isReplay: true }, update: { sessionUpdate: "agent_message_chunk", content: { text: "late historical text" } } } });
+      }
       if (mode === "interleave") playInterleaveTurn();
       else if (mode !== "empty-reply") playTurn();
-      if (mode === "permission") {
+      if (mode === "permission" || mode === "permission-always" || mode === "permission-always-only") {
         // ask the client to approve a tool, then complete once answered
         pendingPermissionId = 9001;
         onPermissionAnswered = complete;
@@ -478,7 +510,8 @@ function handle(msg: any) {
           params: {
             toolCall: { kind: "execute", rawInput: { command: "echo hi" }, title: "echo hi" },
             options: [
-              { optionId: "allow-once", kind: "allow_once" },
+              ...(mode !== "permission" ? [{ optionId: "allow-all", kind: "allow_always" }] : []),
+              ...(mode !== "permission-always-only" ? [{ optionId: "allow-once", kind: "allow_once" }] : []),
               { optionId: "reject", kind: "reject_once" },
             ],
           },
@@ -490,6 +523,9 @@ function handle(msg: any) {
     }
     case "session/cancel":
       // the interrupted prompt resolves as cancelled
+      if (mode === "cancel-result" && hangingPromptId !== undefined) {
+        result(hangingPromptId, { stopReason: "cancelled" });
+      }
       break;
     default:
       if (msg.id !== undefined) out({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "method not found" } });

@@ -204,6 +204,12 @@ export interface ProviderAdapter {
      * attachment an engine cannot open (a bot told it has an image it
      * cannot read burns the turn). */
     images?: boolean;
+    /** False when this engine cannot read attachments stored on this host. */
+    files?: boolean;
+    /** False for governed agents that cannot accept injected models. */
+    customModels?: boolean;
+    /** Every permission must reach a human, even with remembered grants. */
+    explicitApprovals?: boolean;
     /** Effort levels this driver can pass to its CLI, ascending. Absent =
      * the driver cannot set effort, so the app never offers the control —
      * same rule as computerMcp: never show a knob the driver cannot turn. */
@@ -337,4 +343,3 @@ export type AnyProviderDriver = ProviderDriver<any>;
 let eventCounter = 0;
 export const newEventId = () => `ev-${Date.now().toString(36)}-${(eventCounter++).toString(36)}`;
 export const newId = () => crypto.randomUUID();
-
