@@ -32,7 +32,7 @@ function renderChannel(overrides: Partial<Group> = {}) {
     open: true,
     onClose: vi.fn(),
   }));
-  const row = markup.match(/<button\b[^>]*aria-current="page"[\s\S]*?<\/button>/)?.[0];
+  const row = markup.slice(markup.indexOf("<section")).match(/<button\b[^>]*aria-current="page"[\s\S]*?<\/button>/)?.[0];
   expect(row).toBeDefined();
   return row!;
 }
@@ -44,6 +44,33 @@ describe("channel rows in Chats", () => {
     const row = renderChannel();
     expect(row).toContain('class="truncate text-[13px] font-medium text-ink">Ready for review</span>');
     expect(row).toContain('class="block truncate text-[12px] text-ink-secondary"># Engineering</span>');
+  });
+
+  describe("workspace rail controls", () => {
+    beforeEach(() => { state = initialState; });
+
+    it("replaces the app badge with an accessible expanded-pane toggle", () => {
+      const markup = renderToStaticMarkup(createElement(WorkspaceNavigation, { open: true, onClose: vi.fn() }));
+      expect(markup).not.toContain(">R</div>");
+      expect(markup).toContain('aria-label="Hide navigation pane"');
+      expect(markup).toContain('aria-expanded="true"');
+      const controlledId = markup.match(/aria-controls="([^"]+)"/)?.[1];
+      expect(controlledId).toBeDefined();
+      expect(markup).toContain(`<section id="${controlledId}"`);
+    });
+
+    it("marks selected Chats with an outline icon and left indicator instead of a pill", () => {
+      const markup = renderToStaticMarkup(createElement(WorkspaceNavigation, { open: true, onClose: vi.fn() }));
+      const chatButton = markup.match(/<button\b[^>]*aria-label="Chats"[\s\S]*?<\/button>/)?.[0];
+      expect(chatButton).toContain('aria-current="page"');
+      expect(chatButton).toContain('fill="none"');
+      expect(chatButton).toContain('stroke="currentColor"');
+      expect(chatButton?.replace(/<[^>]*>/g, "")).toBe("");
+      expect(chatButton).toContain('title="Chats"');
+      expect(chatButton).toContain("bg-current");
+      expect(chatButton).not.toContain("bg-accent");
+      expect(chatButton).not.toContain("text-white");
+    });
   });
 
   it("removes the channel avatar while preserving selection and unread state", () => {

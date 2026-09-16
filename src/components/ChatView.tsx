@@ -525,28 +525,16 @@ function CommandRunGroup({ run, focusedMessageId }: { run: CommandRunRow; focuse
       icon: <Loader2 size={13} className="animate-spin" aria-hidden="true" />,
       className: "text-accent",
     },
-    counts.failed > 0 && {
-      key: "failed",
-      label: `${counts.failed} failed`,
-      icon: <X size={13} aria-hidden="true" />,
-      className: "text-danger",
-    },
-    counts.completed > 0 && {
-      key: "completed",
-      label: `${counts.completed} completed`,
-      icon: <Check size={13} aria-hidden="true" />,
-      className: "text-success",
-    },
   ].filter((status): status is Exclude<typeof status, false> => Boolean(status));
 
   return (
     <div className="flex justify-start">
-      <div className="w-full max-w-[840px] overflow-hidden rounded-xl border border-hairline/40 bg-panel">
+      <div className="w-full max-w-[840px]">
         <button
           type="button"
           onClick={() => setOpen((value) => !value)}
           aria-expanded={open}
-          className="flex w-full min-w-0 items-center gap-2 px-3 py-2.5 text-left text-[13px] text-ink-secondary hover:bg-raised/60 hover:text-ink"
+          className="flex w-full min-w-0 items-center gap-2 px-3 py-2.5 text-left text-[13px] text-ink-secondary hover:text-ink"
         >
           <ChevronRight size={14} className={cn("shrink-0 transition-transform", open && "rotate-90")} aria-hidden="true" />
           <span className="min-w-0 flex-1 truncate">
@@ -563,13 +551,10 @@ function CommandRunGroup({ run, focusedMessageId }: { run: CommandRunRow; focuse
           </span>
         </button>
         {open && (
-          <div className="border-t border-hairline/40 bg-inset/45">
-            {run.messages.map((message, index) => (
+          <div>
+            {run.messages.map((message) => (
               <div key={message.id} className="contents" data-mid={message.id}>
-                <div className={cn(
-                  "grid grid-cols-[18px_minmax(0,1fr)_auto] items-start gap-2 px-3 py-2.5",
-                  index < run.messages.length - 1 && "border-b border-hairline/30",
-                )}>
+                <div className="grid grid-cols-[18px_minmax(0,1fr)_auto] items-start gap-2 px-3 py-2.5">
                   {message.kind === "options" ? (
                     <ShieldCheck size={14} className={cn("mt-0.5", message.card?.answered === "deny" ? "text-danger" : "text-ink-secondary")} aria-hidden="true" />
                   ) : message.tool?.ok === false ? (

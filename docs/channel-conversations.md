@@ -21,6 +21,11 @@ expands the Channel and selects the new Topic; errors keep the dialog and name
 open for retry. **New Channel** continues to create a Channel, not a Topic.
 Chats lists Topic names with their owning Channel.
 
+The top-left sidebar button hides or shows the navigation list while keeping
+the icon rail available. Choosing Chats or Channels on the rail reopens its
+list. Collapsing the list preserves the current search, filter, expanded
+Channels, and selected conversation for the current app session.
+
 Every existing Channel conversation appears as **General**. Its conversation ID,
 thread, transcript, member sessions, Coordinator receipts, and existing checkpoint
 path are unchanged. The legacy root conversation fields back General; additional

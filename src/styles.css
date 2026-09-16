@@ -44,6 +44,7 @@
   --color-ink: #fcfcfc;
   --color-ink-secondary: #fcfcfc99;
   --color-accent: #1084fe;
+  --color-nav-selected: #b3a4ff;
   --color-accent-border: #459ffe;
   /* the ring a keyboard user follows; sits on the accent so focus reads as
      "the app is talking to you", not as a browser default */
@@ -79,6 +80,7 @@
    they carry. Atelier and Foundry fix this via --color-accent-ink.
    ───────────────────────────────────────────────────────────────────────── */
 [data-skin="midnight"] {
+  --color-nav-selected: #b3a4ff;
   --color-app: #070707;
   --color-chat-background: #070707;
   --color-panel: #111111;
@@ -118,6 +120,7 @@
    value is named next to each, so the drift stays auditable.
    ───────────────────────────────────────────────────────────────────────── */
 [data-skin="atelier"] {
+  --color-nav-selected: #6557c5;
   --color-app: #f5f1eb;           /* outermost ground */
   --color-chat-background: #f5f1eb;
   --color-panel: #fbf8f2;         /* sidebar */
@@ -172,6 +175,7 @@
    8px — because sheet metal doesn't round the way paper does.
    ───────────────────────────────────────────────────────────────────────── */
 [data-skin="foundry"] {
+  --color-nav-selected: #b3a4ff;
   --color-app: #100e0b;           /* deepest ground, warm black */
   --color-chat-background: #100e0b;
   --color-panel: #171410;         /* sidebar */
@@ -220,6 +224,7 @@
    round more than paper does, and far more than sheet metal.
    ───────────────────────────────────────────────────────────────────────── */
 [data-skin="lagoon"] {
+  --color-nav-selected: #6557c5;
   /* The tint is the point, so it is carried by the surfaces, not by a button:
      the ground sits 13 points of green-blue above its red channel, roughly
      three times Atelier's cream cast, which is what makes the skin read as

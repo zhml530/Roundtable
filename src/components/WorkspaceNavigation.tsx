@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
-  Bot, CheckCircle2, Hash, MessageCircle,
-  Plus, Search, Settings2, Users, X,
+  CheckCircle2, Plus, Search, Users, X,
 } from "lucide-react";
 import { formatTime, useStore, type Bot as Agent, type Group } from "@/state/store";
 import { BotAvatar, STANDARD_BOT_AVATAR_SIZE } from "./Avatar";
@@ -14,8 +13,8 @@ import { track } from "@/lib/analytics";
 import { useConversationMenus } from "./useConversationMenus";
 import type { conversationMenuBindings } from "@/lib/conversation-menu";
 import { ChannelTree } from "./ChannelTree";
+import { WorkspaceRail, type WorkspaceView } from "./WorkspaceRail";
 
-type WorkspaceView = "chats" | "channels" | "tasks" | "agents";
 const CHAT_FILTERS = ["all", "channels", "direct", "unread"] satisfies readonly ChatFilter[];
 
 interface ChatRow {
@@ -72,15 +71,6 @@ function channelChat(group: Group): ChatRow {
     unread: group.unread,
     group,
   };
-}
-
-function NavButton({ active, icon: Icon, label, onClick }: { active: boolean; icon: typeof MessageCircle; label: string; onClick: () => void }) {
-  return (
-    <button type="button" onClick={onClick} title={label} aria-label={label}
-      className={cn("flex size-11 items-center justify-center rounded-xl transition-colors", active ? "bg-accent text-white" : "text-ink-secondary hover:bg-raised hover:text-ink")}>
-      <Icon size={19} />
-    </button>
-  );
 }
 
 function ConversationRow({ row, selected, onOpen, menuBindings }: {
@@ -250,6 +240,8 @@ export function WorkspaceNavigation({ open, onClose }: { open: boolean; onClose:
   const { state, dispatch } = useStore();
   const { capabilities } = useDesktopCapabilities();
   const [view, setView] = useState<WorkspaceView>("chats");
+  const [paneOpen, setPaneOpen] = useState(true);
+  const paneId = useId();
   const [filter, setFilter] = useState<ChatFilter>("all");
   const [query, setQuery] = useState("");
   const [newChatOpen, setNewChatOpen] = useState(false);
@@ -320,21 +312,20 @@ export function WorkspaceNavigation({ open, onClose }: { open: boolean; onClose:
     if (nextView === "agents") dispatch({ type: "showAgents" });
     else if (state.activeView === "agents" && state.selectedId) dispatch({ type: "select", id: state.selectedId });
     setView(nextView);
+    setPaneOpen(true);
+  };
+  const togglePane = () => {
+    menus.close();
+    setNewChatOpen(false);
+    setPaneOpen((value) => !value);
   };
 
   const title = view === "chats" ? "Chats" : view === "channels" ? "Channels" : view === "tasks" ? "Tasks" : "Agents";
   return (
-    <aside className={cn("z-40 flex h-full shrink-0 select-none border-r border-hairline/50 bg-panel max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:w-[344px] max-md:shadow-2xl", open ? "max-md:translate-x-0" : "max-md:-translate-x-full", "transition-transform md:w-[352px]") }>
-      <nav className="flex w-16 flex-col items-center gap-2 border-r border-hairline/40 px-2 pb-3 pt-3">
-        <div className="mb-3 flex size-10 items-center justify-center rounded-xl bg-accent text-lg font-bold text-white" style={dragStyle}>R</div>
-        <NavButton active={view === "chats"} icon={MessageCircle} label="Chats" onClick={() => changeView("chats")} />
-        <NavButton active={view === "channels"} icon={Hash} label="Channels" onClick={() => changeView("channels")} />
-        <NavButton active={view === "tasks"} icon={CheckCircle2} label="Tasks" onClick={() => changeView("tasks")} />
-        <NavButton active={view === "agents"} icon={Bot} label="Agents" onClick={() => changeView("agents")} />
-        <span className="flex-1" />
-        <NavButton active={false} icon={Settings2} label="Settings" onClick={() => dispatch({ type: "toggleAppSettings" })} />
-      </nav>
-      <section className="flex min-w-0 flex-1 flex-col">
+    <aside className={cn("z-40 flex h-full shrink-0 select-none border-r border-hairline/50 bg-panel max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:shadow-2xl transition-transform", open ? "max-md:translate-x-0" : "max-md:-translate-x-full", paneOpen ? "max-md:w-[344px] md:w-[352px]" : "w-16") }>
+      <WorkspaceRail view={view} paneOpen={paneOpen} paneId={paneId} onTogglePane={togglePane}
+        onChangeView={changeView} onOpenSettings={() => dispatch({ type: "toggleAppSettings" })} />
+      <section id={paneId} hidden={!paneOpen} className={cn("min-w-0 flex-1 flex-col", paneOpen ? "flex" : "hidden")}>
         <header className="flex h-14 items-center gap-2 px-4" style={dragStyle}>
           <h1 className="text-[15px] font-semibold text-ink">{title}</h1>
           <span className="flex-1" />
