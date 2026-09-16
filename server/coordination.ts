@@ -405,7 +405,7 @@ export function validateCoordinationPlan(plan: PlanArtifact): void {
 }
 
 export function fallbackPlan(goal: string): PlanArtifact {
-  return { version: 1, goal, tasks: [{ id: "complete", title: "Complete the request", description: goal, role: "contributor", assignee: "contributor" }] };
+  return { version: 1, goal, tasks: [{ id: "complete", title: "Complete the request", description: goal, role: "architect", assignee: "architect" }] };
 }
 
 export function reviewApproved(output: string | undefined): boolean {

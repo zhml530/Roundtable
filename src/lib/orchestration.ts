@@ -34,11 +34,13 @@ async function requestBody(body: unknown): Promise<string | Uint8Array | undefin
 /** Fetch-compatible facade backed by Electron IPC, not a network request. */
 export async function orchestrationFetch(path: string, init: RequestInit = {}): Promise<Response> {
   if (init.signal?.aborted) throw init.signal.reason ?? new DOMException("Aborted", "AbortError");
+  const body = await requestBody(init.body);
+  if (init.signal?.aborted) throw init.signal.reason ?? new DOMException("Aborted", "AbortError");
   const pending = bridge().request({
     path,
     method: (init.method?.toUpperCase() ?? "GET") as "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
     headers: Object.fromEntries(new Headers(init.headers).entries()),
-    body: await requestBody(init.body),
+    body,
   });
   const result = init.signal
     ? await Promise.race([
