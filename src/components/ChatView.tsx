@@ -1,7 +1,6 @@
 import { Component, Fragment, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   AlertTriangle,
-  ArrowDown,
   Brain,
   Check,
   ChevronDown,
@@ -39,6 +38,7 @@ import { ChatMarkdown } from "./ChatMarkdown";
 import { OptionCard, shouldHideOnboardingCard } from "./OptionCard";
 import { ApprovalCard } from "./ApprovalCard";
 import { Composer } from "./Composer";
+import { MessageViewport, type MessageViewportItem } from "./MessageViewport";
 import { ChatFindBar } from "./ChatFindBar";
 import { CopyButton } from "./CopyButton";
 import { ReplyQuote } from "./ReplyQuote";
@@ -52,15 +52,6 @@ import { cn } from "@/lib/cn";
 import { useFocusMessage } from "@/lib/focus-message";
 import { webhookMessageView } from "@/lib/webhook-message";
 import { splitAttachedImages } from "@/lib/composer-attachments";
-import { BOTTOM_FOLLOW_THRESHOLD, shouldResumeBottomFollow } from "@/lib/bottom-follow";
-import {
-  TRANSCRIPT_WINDOW_SIZE,
-  expandWindowStart,
-  focusWindowRange,
-  resolveTranscriptWindow,
-  shouldContinueLoadingEarlier,
-  tailWindowStart,
-} from "@/lib/transcript-window";
 import { changedFilesFromTurnRows, type ChangedFile } from "@/lib/changed-files";
 import {
   commandRunCounts,
@@ -300,7 +291,7 @@ function Bubble({
   };
 
   return (
-    <div className={cn("group flex w-full flex-col", user ? "animate-msg-in items-end" : "items-start")}>
+    <div className={cn("group flex w-full flex-col", user ? "items-end" : "items-start")}>
       <div className={cn("flex w-full items-center gap-1.5", user ? "justify-end" : "flex-wrap justify-start")}>
         {user && <CopyButton text={visibleText} />}
         {!user && showToolbar && (
@@ -668,12 +659,9 @@ function WorkingTimer({ since }: { since: number }) {
   return <span ref={ref} className="text-[12.5px] text-ink-secondary">{label()}</span>;
 }
 
-/** The settled transcript, memoized as one unit: during streaming every
- * frame re-renders ChatView, but all of these props keep their identity
- * (bot/messages only change on real message events), so the whole list —
- * every markdown tree, every code block — bails out of React work and only
- * the streaming tail below it commits. This is the t3code structural-sharing
- * idea at component granularity. */
+/** A settled logical transcript row. MessageViewport virtualizes these rows,
+ * while this memo boundary keeps expensive Markdown/tool trees isolated from
+ * unrelated viewport and streaming-tail updates. */
 const MessagesList = memo(function MessagesList({
   bot,
   messages,
@@ -686,10 +674,11 @@ const MessagesList = memo(function MessagesList({
   onSubmitEdit,
   onRegenerate,
   onReply,
+  showFirstDaySeparator = true,
 }: {
   bot: Bot;
   messages: Message[];
-  /** Active-branch messages, including ones outside the mounted window. */
+  /** Full active-branch messages, including virtualized-offscreen rows. */
   transcript: Message[];
   /** Provider turn currently in flight for this thread. */
   activeTurnId?: string;
@@ -701,6 +690,7 @@ const MessagesList = memo(function MessagesList({
   onSubmitEdit: (id: string, text: string) => void;
   onRegenerate: () => void;
   onReply: (message: Message) => void;
+  showFirstDaySeparator?: boolean;
 }) {
   const { state, dispatch } = useStore();
   const rows = useMemo(() => commandRunRows(messages), [messages]);
@@ -710,7 +700,7 @@ const MessagesList = memo(function MessagesList({
       )?.turnId
     : undefined;
   const liveTurnId = activeTurnId ?? fallbackActiveTurnId;
-  let previousRenderedAt: number | undefined;
+  let previousRenderedAt: number | undefined = showFirstDaySeparator ? undefined : messages[0]?.at;
   const renderRow = (entry: CommandRunRow | Extract<ReturnType<typeof commandRunRows>[number], { kind: "message" }>, showToolbar = true) => {
     const m = entry.kind === "message" ? entry.message : entry.messages.at(-1)!;
     if (entry.kind === "command-run") {
@@ -842,6 +832,42 @@ const MessagesList = memo(function MessagesList({
   );
 });
 
+type TranscriptEntry = ReturnType<typeof commandRunRows>[number];
+
+interface TranscriptViewportRow extends MessageViewportItem {
+  messages: Message[];
+  showDaySeparator: boolean;
+}
+
+function messagesForTranscriptEntry(entry: TranscriptEntry): Message[] {
+  if (entry.kind === "message") return [entry.message];
+  if (entry.kind === "command-run") return entry.messages;
+  return entry.rows.flatMap((row) => row.kind === "message" ? [row.message] : row.messages);
+}
+
+function transcriptViewportRows(messages: Message[]): TranscriptViewportRow[] {
+  let previousAt: number | undefined;
+  return commandRunRows(messages).map((entry) => {
+    const entryMessages = messagesForTranscriptEntry(entry);
+    const first = entryMessages[0];
+    const last = entryMessages.at(-1) ?? first;
+    const showDaySeparator = previousAt === undefined
+      || new Date(previousAt).toDateString() !== new Date(first?.at ?? 0).toDateString();
+    previousAt = last?.at;
+    const key = entry.kind === "turn"
+      ? `turn:${entry.turnId}:${first?.id ?? "empty"}`
+      : entry.kind === "command-run"
+        ? `run:${entry.turnId}:${first?.id ?? "empty"}`
+        : entry.message.id;
+    return {
+      key,
+      messageIds: entryMessages.map((message) => message.id),
+      messages: entryMessages,
+      showDaySeparator,
+    };
+  });
+}
+
 /** The one pinned message, above the transcript: sender, one line, click to
  * jump, X to unpin. Resolves the pin id against the full message list; a
  * pin that no longer resolves renders nothing (edited away or deleted). */
@@ -891,8 +917,6 @@ function PinnedBanner({
 
 export function ChatView({ bot }: { bot: Bot }) {
   const { state, dispatch, loadEarlierMessages } = useStore();
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const scrollbackTriggerRef = useRef<HTMLDivElement>(null);
 
   const stream = useStreaming();
   const streaming = stream.streaming[bot.threadId];
@@ -917,34 +941,8 @@ export function ChatView({ bot }: { bot: Bot }) {
   // only the active branch is rendered; forks stay reachable via ‹ › nav
   const messages = useMemo(() => visibleMessages(bot), [bot]);
 
-  // Windowed transcript: only a tail of the thread mounts (screenshots make
-  // full threads DOM-heavy). The boundary is anchored per bot+task; a
-  // render-phase reset re-tails it on switch so the old thread's boundary
-  // never flashes into the new one. Everything derived below (lastUserMessage,
-  // working dots) stays computed from the FULL list.
   const transcriptKey = `${bot.id}:${bot.threadId}`;
-  const [transcriptWindow, setTranscriptWindow] = useState<{
-    key: string;
-    start: number;
-    end: number | null;
-  }>(() => ({
-    key: transcriptKey,
-    start: tailWindowStart(messages.length),
-    end: null,
-  }));
-  if (transcriptWindow.key !== transcriptKey) {
-    setTranscriptWindow({ key: transcriptKey, start: tailWindowStart(messages.length), end: null });
-  }
-  const {
-    visible: windowedMessages,
-    hiddenCount,
-    laterCount,
-    startIndex,
-    endIndex,
-  } = useMemo(
-    () => resolveTranscriptWindow(messages, transcriptWindow.start, TRANSCRIPT_WINDOW_SIZE, transcriptWindow.end),
-    [messages, transcriptWindow.start, transcriptWindow.end],
-  );
+  const viewportRows = useMemo(() => transcriptViewportRows(messages), [messages]);
 
   // one message at a time may be in edit mode
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -970,142 +968,9 @@ export function ChatView({ bot }: { bot: Bot }) {
     }
   }, [lastUserMessage, bot.busy, bot.id, dispatch]);
 
-  // Scroll pinning: follow the bottom while the user hasn't scrolled away.
-  // Follow breaks ONLY on an upward user gesture (wheel/touch), never on
-  // scroll position checks — streamed content growth flickers "at bottom"
-  // false for a frame, and breaking there kills follow permanently
-  // (upstream-verified failure). Scrolling back to the end re-arms it.
-  const [follow, setFollow] = useState(true);
-  const followRef = useRef(true);
-  const previousScrollTop = useRef(0);
-  const touchY = useRef(0);
-
-  const setBottomFollow = useCallback((next: boolean) => {
-    followRef.current = next;
-    setFollow(next);
-  }, []);
-
-  useEffect(() => setBottomFollow(true), [bot.id, setBottomFollow]);
-
-  // A search result may be hundreds of rows before the mounted tail. Open a
-  // bounded window around it first; useFocusMessage then scrolls and flashes
-  // the row after React commits that window.
-  const appliedFocus = useRef<number | null>(null);
-  useEffect(() => {
-    const focus = state.focusMessage;
-    if (!focus || focus.consumed || focus.threadId !== bot.threadId || appliedFocus.current === focus.nonce) return;
-    const targetIndex = messages.findIndex((message) => message.id === focus.messageId);
-    if (targetIndex < 0) return;
-    appliedFocus.current = focus.nonce;
-    const range = focusWindowRange(messages.length, targetIndex);
-    setBottomFollow(false);
-    setTranscriptWindow({ key: transcriptKey, start: range.start, end: range.end });
-  }, [bot.threadId, messages, setBottomFollow, state.focusMessage, transcriptKey]);
   useFocusMessage(bot.threadId, messages.length > 0);
-
-  // deps track the FULL messages.length, so expanding the window (which only
-  // changes windowedMessages) can never re-trigger this bottom scrollTo
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el || !followRef.current) return;
-    el.scrollTo({ top: el.scrollHeight });
-    previousScrollTop.current = el.scrollTop;
-  }, [bot.id, messages.length, streaming, reasoning, bot.busy, follow]);
-
-  // Expanding prepends rows: capture the height first, then after the commit
-  // shift scrollTop by the growth so the message under the cursor stays put
-  // (browser scroll anchoring is disabled on this container).
-  const preExpandHeight = useRef<number | null>(null);
-  const loadingFullHistory = useRef(false);
   const pageState = state.messagePages[bot.threadId];
-  const canLoadEarlier = hiddenCount > 0 || pageState?.hasMore === true;
-  const showEarlier = async () => {
-    preExpandHeight.current = scrollRef.current?.scrollHeight ?? null;
-    // expanding means reading scrollback — never let a mid-expand stream
-    // event pin the viewport back to the bottom
-    setBottomFollow(false);
-    if (hiddenCount > 0) {
-      const start = expandWindowStart(startIndex);
-      setTranscriptWindow((w) => ({ ...w, start }));
-    } else {
-      try {
-        await loadEarlierMessages(bot.threadId);
-        setTranscriptWindow((window) => ({ ...window, start: 0 }));
-      } catch {
-        preExpandHeight.current = null;
-      }
-    }
-  };
-  useEffect(() => {
-    const trigger = scrollbackTriggerRef.current;
-    const root = scrollRef.current;
-    if (!trigger || !root) return;
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (
-          entry?.isIntersecting &&
-          canLoadEarlier &&
-          !pageState?.loading &&
-          !pageState?.error
-        ) {
-          loadingFullHistory.current = true;
-          void showEarlier();
-        }
-      },
-      { root, threshold: 0 },
-    );
-    observer.observe(trigger);
-    return () => observer.disconnect();
-  }, [canLoadEarlier, pageState?.error, pageState?.loading, showEarlier]);
-  useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (preExpandHeight.current === null || !el) return;
-    el.scrollTop += el.scrollHeight - preExpandHeight.current;
-    preExpandHeight.current = null;
-    // keep the resume-follow heuristic from reading the restore as a
-    // downward user scroll
-    previousScrollTop.current = el.scrollTop;
-    if (!shouldContinueLoadingEarlier({
-      requested: loadingFullHistory.current,
-      canLoadEarlier,
-      loading: pageState?.loading === true,
-      failed: Boolean(pageState?.error),
-    })) {
-      if (!canLoadEarlier) loadingFullHistory.current = false;
-      return;
-    }
-    void showEarlier();
-  }, [canLoadEarlier, messages.length, pageState?.error, pageState?.loading, transcriptWindow.start]);
-
-  const showLater = () => {
-    setBottomFollow(false);
-    const nextEnd = Math.min(messages.length, endIndex + TRANSCRIPT_WINDOW_SIZE);
-    setTranscriptWindow((w) => ({ ...w, end: nextEnd >= messages.length ? null : nextEnd }));
-  };
-
-  // keyboard is a scroll gesture too (upstream lesson): PageUp/Home break
-  // follow like an upward wheel; the at-end onScroll check re-arms it
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "PageUp" || (e.key === "Home" && !(e.target instanceof HTMLTextAreaElement))) {
-        setBottomFollow(false);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [setBottomFollow]);
-
-  const atEnd = () => {
-    const el = scrollRef.current;
-    return !el || el.scrollHeight - el.scrollTop - el.clientHeight < BOTTOM_FOLLOW_THRESHOLD;
-  };
-  const jumpToLatest = () => {
-    setBottomFollow(true);
-    setTranscriptWindow({ key: transcriptKey, start: tailWindowStart(messages.length), end: null });
-    requestAnimationFrame(() => {
-      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-    });
-  };
+  const canLoadEarlier = pageState?.hasMore === true;
 
   // Every desktop header is a drag region. Non-macOS overlays also need room
   // for their caption buttons.
@@ -1193,69 +1058,25 @@ export function ChatView({ bot }: { bot: Bot }) {
         }
       />
 
-      {/* Messages */}
-      <div className="relative min-h-0 flex-1">
-        <div
-          ref={scrollRef}
-          className="h-full overflow-y-auto px-5 [overflow-anchor:none]"
-          onWheel={(e) => {
-            if (e.deltaY < 0 && e.currentTarget.scrollHeight > e.currentTarget.clientHeight) setBottomFollow(false);
-            else if (atEnd()) setBottomFollow(true);
-          }}
-          onTouchStart={(e) => (touchY.current = e.touches[0]?.clientY ?? 0)}
-          onTouchMove={(e) => {
-            const y = e.touches[0]?.clientY ?? 0;
-            if (y > touchY.current + 4) setBottomFollow(false);
-            else if (atEnd()) setBottomFollow(true);
-          }}
-          onScroll={() => {
-            const el = scrollRef.current;
-            if (!el) return;
-            const scrollTop = el.scrollTop;
-            if (scrollTop < 80 && canLoadEarlier && !pageState?.loading && (hiddenCount > 0 || !pageState?.error)) {
-              loadingFullHistory.current = true;
-              void showEarlier();
-            }
-            const resume = shouldResumeBottomFollow({
-              following: followRef.current,
-              previousScrollTop: previousScrollTop.current,
-              scrollTop,
-              distanceFromBottom: el.scrollHeight - scrollTop - el.clientHeight,
-            });
-            previousScrollTop.current = scrollTop;
-            if (resume) setBottomFollow(true);
-          }}
-        >
-        <div
-          className="mx-auto flex max-w-[900px] flex-col gap-3 pb-14"
-          role="log"
-          aria-live="polite"
-          aria-label={`Conversation with ${bot.name}`}
-        >
-          <div ref={scrollbackTriggerRef} aria-hidden="true" className="h-px shrink-0" />
-          {canLoadEarlier && pageState?.loading && (
-            <div
-              className="flex items-center justify-center gap-2 pt-2 text-[12.5px] text-ink-secondary"
-              role="status"
-              aria-live="polite"
-            >
-              <Loader2 size={14} className="animate-spin" aria-hidden="true" />
-              Loading earlier messages…
-            </div>
-          )}
-          {hiddenCount === 0 && pageState?.hasMore && pageState.error && (
-            <div className="flex justify-center pt-2">
-              <button
-                onClick={() => void showEarlier()}
-                className="rounded-full border border-hairline/40 bg-panel px-3 py-1 text-[12.5px] text-ink-secondary hover:bg-raised hover:text-ink"
-              >
-                Retry loading earlier messages
-              </button>
-            </div>
-          )}
+      {/* Virtuoso is the sole owner of transcript measurement and scrolling. */}
+      <MessageViewport
+        key={transcriptKey}
+        ariaLabel={`Conversation with ${bot.name}`}
+        items={viewportRows}
+        canLoadEarlier={canLoadEarlier}
+        loading={pageState?.loading === true}
+        error={pageState?.error}
+        onLoadEarlier={() => loadEarlierMessages(bot.threadId)}
+        focusMessageId={
+          state.focusMessage?.threadId === bot.threadId && !state.focusMessage.consumed
+            ? state.focusMessage.messageId
+            : undefined
+        }
+        streamRevision={`${visibleStreaming?.length ?? 0}:${reasoning?.length ?? 0}:${bot.busy ? 1 : 0}`}
+        renderItem={(row) => (
           <MessagesList
             bot={bot}
-            messages={windowedMessages}
+            messages={row.messages}
             transcript={messages}
             activeTurnId={stream.activeTurns[bot.threadId]}
             editingId={editingId}
@@ -1265,56 +1086,49 @@ export function ChatView({ bot }: { bot: Bot }) {
             onSubmitEdit={submitEdit}
             onRegenerate={regenerate}
             onReply={setReplyTo}
+            showFirstDaySeparator={row.showDaySeparator}
           />
-          {laterCount > 0 && (
-            <div className="flex justify-center">
-              <button
-                onClick={showLater}
-                className="rounded-full border border-hairline/40 bg-panel px-3 py-1 text-[12.5px] text-ink-secondary hover:bg-raised hover:text-ink"
-              >
-                Show later messages ({laterCount} more)
-              </button>
-            </div>
-          )}
-          {provisioning && (
-            <div className="flex justify-start">
-              <div className="flex items-center gap-2 rounded-full border border-hairline/40 bg-panel px-3 py-1.5 text-[13px] text-ink-secondary">
-                <Loader2 size={13} className="animate-spin" />
-                Setting up this bot's computer…
-              </div>
-            </div>
-          )}
-          {reasoning && bot.busy && <ThinkingStrip text={reasoning} active={!visibleStreaming} />}
-          {visibleStreaming && <StreamingBubble text={visibleStreaming} />}
-        </div>
-        </div>
-        {showWorkingDots(bot.busy, visibleStreaming, messages.at(-1)) && (
-          <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 px-5">
-            <div
-              className="mx-auto flex max-w-[900px] items-center gap-2.5 px-1 py-2"
-              role="status"
-            >
-              <span className="flex items-center gap-1.5" aria-hidden="true">
-                <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:0ms]" />
-                <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:150ms]" />
-                <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:300ms]" />
-              </span>
-              <WorkingTimer since={lastUserMessage?.at ?? Date.now()} />
-            </div>
-          </div>
         )}
-      </div>
-
-      {/* Reading scrollback — one tap back to the end, streaming or not */}
-      {!follow && (
-        <button
-          onClick={jumpToLatest}
-          aria-label="Jump to latest messages"
-          className="animate-pop-in absolute bottom-24 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-hairline/40 bg-raised px-3 py-1.5 text-[12.5px] text-ink shadow-lg hover:bg-raised-hover"
-        >
-          <ArrowDown size={13} /> Jump to latest
-        </button>
-      )}
+        footer={(
+          <>
+            {messages.length === 0 && !bot.busy && (
+              <MessagesList
+                bot={bot}
+                messages={[]}
+                transcript={messages}
+                activeTurnId={stream.activeTurns[bot.threadId]}
+                editingId={editingId}
+                canRetryLast={false}
+                engine={state.instances.find((i) => i.instanceId === bot.modelSelection.instanceId)}
+                onCancelEdit={cancelEdit}
+                onSubmitEdit={submitEdit}
+                onRegenerate={regenerate}
+                onReply={setReplyTo}
+              />
+            )}
+            {provisioning && (
+              <div className="flex justify-start">
+                <div className="flex items-center gap-2 rounded-full border border-hairline/40 bg-panel px-3 py-1.5 text-[13px] text-ink-secondary">
+                  <Loader2 size={13} className="animate-spin" />
+                  Setting up this bot's computer…
+                </div>
+              </div>
+            )}
+            {reasoning && bot.busy && <ThinkingStrip text={reasoning} active={!visibleStreaming} />}
+            {visibleStreaming && <StreamingBubble text={visibleStreaming} />}
+            {showWorkingDots(bot.busy, visibleStreaming, messages.at(-1)) && (
+              <div className="flex items-center gap-2.5 px-1 py-2" role="status">
+                <span className="flex items-center gap-1.5" aria-hidden="true">
+                  <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:0ms]" />
+                  <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:150ms]" />
+                  <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:300ms]" />
+                </span>
+                <WorkingTimer since={lastUserMessage?.at ?? Date.now()} />
+              </div>
+            )}
+          </>
+        )}
+      />
 
       {/* keyed by bot: a draft belongs to the conversation it was typed in,
           so switching bots starts from an empty composer instead of carrying

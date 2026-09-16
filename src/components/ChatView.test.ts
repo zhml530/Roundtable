@@ -1,5 +1,5 @@
 /* oxlint-disable anti-slop/no-module-mocking -- Isolate transcript rendering from store transport and unrelated composer/call UI. */
-import { createElement } from "react";
+import { createElement, Fragment, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initialState, type Bot, type Message } from "@/state/store";
@@ -14,6 +14,18 @@ vi.mock("./DesktopCapabilities", () => ({
 }));
 vi.mock("./Composer", () => ({ Composer: () => null }));
 vi.mock("./CallView", () => ({ CallOverlay: () => null }));
+vi.mock("./MessageViewport", () => ({
+  MessageViewport: ({ items, renderItem, footer }: {
+    items: Array<{ key: string }>;
+    renderItem: (item: { key: string }) => ReactNode;
+    footer?: ReactNode;
+  }) => createElement(
+    Fragment,
+    null,
+    ...items.map((item) => createElement("div", { key: item.key }, renderItem(item))),
+    footer,
+  ),
+}));
 
 function renderRun(tools: NonNullable<Message["tool"]>[]) {
   const bot: Bot = {
