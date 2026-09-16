@@ -511,8 +511,10 @@ export function Composer({
     setRecording((r) => !r);
   };
 
+  // Match the message viewport's stable 8px scrollbar reservation so the
+  // 900px transcript and Composer frames share the same horizontal edges.
   return (
-    <div className="px-5 pb-2 pt-1">
+    <div className="pb-2 pl-5 pr-7 pt-1">
       {speechError && (
         <div className="mx-auto mb-2 max-w-[900px] rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-[12px] text-warning">
           {speechError}

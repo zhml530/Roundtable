@@ -13,7 +13,7 @@ flowchart LR
   Rows --> Viewport[Shared MessageViewport]
   Viewport --> Virtuoso[react-virtuoso]
   Virtuoso --> Renderers[Existing message renderers]
-  Virtuoso -->|startReached| Page[Load 10 earlier messages]
+  Virtuoso -->|near top| Page[Load 10 earlier messages]
   Stream[Streaming tail] --> Viewport
   Search[Search or pinned jump] -->|scrollToIndex| Virtuoso
 ```
@@ -32,7 +32,7 @@ flowchart LR
 - [x] Add `react-virtuoso` as a root dependency.
 - [x] Add a shared `MessageViewport` that exclusively owns list scrolling.
 - [x] Convert direct-chat messages into stable logical rows.
-- [x] Use `startReached` for the existing 10-message history pagination.
+- [x] Load the existing 10-message history page when the viewport nears the top.
 - [x] Use an initial `LAST/end` location so history never paints at the top.
 - [x] Preserve position when earlier rows are prepended.
 - [x] Integrate search/pinned-message jumps through `scrollToIndex`.

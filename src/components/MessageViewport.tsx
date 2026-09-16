@@ -26,7 +26,7 @@ const ViewportList = forwardRef<HTMLDivElement, ComponentProps<"div">>(function 
     <div
       {...props}
       ref={ref}
-      className="mx-auto flex w-full max-w-[900px] flex-col gap-3"
+      className="mx-auto flex w-[calc(100%-2.5rem)] max-w-[900px] flex-col gap-3"
     >
       {children}
     </div>
@@ -71,7 +71,7 @@ function ViewportFooter({ context }: { context: MessageViewportContext }) {
 
 function ViewportEmpty({ context }: { context: MessageViewportContext }) {
   return context.footer
-    ? <div className="mx-auto flex h-full w-full max-w-[900px] flex-col gap-3 pb-14">{context.footer}</div>
+    ? <div className="mx-auto flex h-full w-[calc(100%-2.5rem)] max-w-[900px] flex-col gap-3 pb-14">{context.footer}</div>
     : null;
 }
 
@@ -151,13 +151,17 @@ export function MessageViewport<T extends MessageViewportItem>({
     <div className="relative min-h-0 flex-1">
       <Virtuoso<T, MessageViewportContext>
         ref={virtuosoRef}
-        className="h-full overflow-x-hidden px-5"
+        className="h-full overflow-x-hidden [scrollbar-gutter:stable]"
         role="log"
         aria-label={ariaLabel}
         aria-live="polite"
         alignToBottom
         atBottomThreshold={48}
         atBottomStateChange={setAtBottom}
+        atTopThreshold={160}
+        atTopStateChange={(atTop) => {
+          if (atTop && canLoadEarlier && !loading && !error) void onLoadEarlier();
+        }}
         components={VIEWPORT_COMPONENTS}
         computeItemKey={(_index, item) => item.key}
         context={context}
@@ -167,9 +171,6 @@ export function MessageViewport<T extends MessageViewportItem>({
         initialTopMostItemIndex={{ index: "LAST", align: "end" }}
         increaseViewportBy={{ top: 320, bottom: 480 }}
         itemContent={(_index, item) => renderItem(item)}
-        startReached={() => {
-          if (canLoadEarlier && !loading && !error) void onLoadEarlier();
-        }}
       />
       {!atBottom && (
         <button
