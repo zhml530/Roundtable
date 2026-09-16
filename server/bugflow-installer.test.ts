@@ -109,6 +109,25 @@ describe("fresh-source standalone BugFlow installer", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("cancels the owned command and releases its lock before shutdown returns", async () => {
+    const { root, old, options, configured } = await fixture();
+    let entered = () => {};
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const run: InstallRunner = ({ signal }) => new Promise((_resolve, reject) => {
+      signal!.addEventListener("abort", () => reject(new Error("Build cancelled")), { once: true });
+      entered();
+    });
+    const installer = new BugFlowInstaller({ ...options, run });
+    installer.start("bugflow");
+    await started;
+    await installer.shutdown();
+    expect(installer.status().state).toBe("failed");
+    expect(configured).toEqual([]);
+    expect(await readdir(root)).not.toContain("install.lock");
+    expect(await readFile(join(old, "BugFlow.exe"), "utf8")).toBe("old host - never replace");
+    expect(() => installer.start("bugflow")).toThrow("shutting down");
+  });
+
   it("does not pass inherited provider keys to source/build/version commands", () => {
     const env = installerEnvironment();
     expect(env.GIT_TERMINAL_PROMPT).toBe("0");
@@ -128,5 +147,12 @@ describe("fresh-source standalone BugFlow installer", () => {
       .rejects.toThrow("Command exited 17.");
     await expect(runInstallCommand({ ...command, args: ["-e", "setInterval(()=>{},1000)"], timeoutMs: 200 }))
       .rejects.toThrow("timed out");
+    const controller = new AbortController();
+    const running = runInstallCommand({
+      ...command, args: ["-e", "setInterval(()=>{},1000)"], signal: controller.signal,
+    });
+    const rejected = expect(running).rejects.toThrow("cancelled during shutdown");
+    controller.abort();
+    await rejected;
   });
 });

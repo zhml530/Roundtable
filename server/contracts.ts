@@ -238,6 +238,8 @@ export interface ProviderAdapter {
    * a normal turn). Only drivers with `capabilities.queueing` implement it. */
   steer?(threadId: ThreadId, text: string): Promise<boolean>;
   hasSession(threadId: ThreadId): boolean;
+  /** Includes asynchronous preflight, before a child/session exists. */
+  hasActiveTurns?(): boolean;
   stopAll(): Promise<void>;
   onEvent(listener: RuntimeEventListener): () => void;
 }

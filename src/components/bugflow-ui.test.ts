@@ -39,10 +39,14 @@ describe("BugFlow UI wiring", () => {
     expect(renderToStaticMarkup(createElement(ModelPicker, { bot }))).toContain("Use a local model");
   });
 
-  it("offers a BugFlow CLI path editor instead of SSH connection controls", () => {
+  it("offers the standalone installer alongside the BugFlow CLI path editor", () => {
     const html = renderToStaticMarkup(createElement(EnginesSettings));
     expect(html).toContain("BugFlow Agent custom CLI path");
     expect(html).not.toContain("Managed through SSH");
+    expect(html).toContain("Standalone Windows EXE");
+    expect(html).toContain("builds a new EXE locally every time");
+    fixture.instances[0].driverKind = "geminiAgent";
+    expect(renderToStaticMarkup(createElement(EnginesSettings))).not.toContain("Standalone Windows EXE");
   });
 
   it("shows the actionable host message instead of treating installed as authenticated", () => {

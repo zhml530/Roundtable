@@ -179,6 +179,16 @@ export class ProviderRegistry {
     return [...this.byId.values()].flatMap((e) => (e.live ? [e.live] : []));
   }
 
+  /** Publish a prepared replacement without disposing unrelated providers. */
+  replacePrepared(instance: ProviderInstance, configs: InstanceConfigMap, cli: string): void {
+    this.byId.set(instance.instanceId, { instanceId: instance.instanceId, live: instance });
+    this.cliByInstance.set(instance.instanceId, cli);
+    this.generation += 1;
+    this.currentConfigHash = configHash(configs);
+    this.catalog = null;
+    this.refreshInFlight = null;
+  }
+
   /** Immediate startup shape. Cached health is explicitly stale; a first
    * install receives checking rows rather than a fabricated available state. */
   describeCached(): ProviderDescription[] {

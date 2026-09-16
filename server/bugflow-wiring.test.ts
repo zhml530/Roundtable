@@ -28,6 +28,8 @@ const responseSchema = z.object({
   bot: botSchema.optional(),
   outcome: z.string().optional(),
   error: z.string().optional(),
+  supported: z.boolean().optional(),
+  installation: z.object({ state: z.string(), progress: z.number() }).passthrough().optional(),
 });
 const api = async (method: string, path: string, body?: unknown) => {
   const response = await fetch(`${BASE}${path}`, {
@@ -87,6 +89,30 @@ describe("BugFlow backend governance wiring", () => {
       models: { default: "bugflow-default", options: [{ id: "bugflow-default", label: "BugFlow (agent-controlled)" }] },
       capabilities: { customModels: false, explicitApprovals: true, files: false, images: false, agentsMcp: false },
     });
+  });
+
+  it("reports installer support without starting installation or the host", async () => {
+    const result = await api("GET", "/api/bugflow/install");
+    expect(result.status).toBe(200);
+    expect(result.body.supported).toBe(process.platform === "win32");
+    expect(result.body.installation).toMatchObject({ state: "idle", progress: 0 });
+  });
+
+  it.each([
+    {}, { instanceId: "missing" }, { instanceId: "legacy" }, { instanceId: "__proto__" },
+    { instanceId: "governed", source: "https://example.com/untrusted" },
+    { instanceId: "governed", cli: "C:\\arbitrary\\overwrite.exe" },
+    { instanceId: "governed", ref: "old-artifact" },
+  ])("rejects invalid or client-controlled installation targets %j", async (body) => {
+    expect((await api("POST", "/api/bugflow/install", body)).status).toBe(400);
+    expect((await api("GET", "/api/bugflow/install")).body.installation?.state).toBe("idle");
+  });
+
+  it("rejects simple cross-origin form installation requests", async () => {
+    const result = await fetch(`${BASE}/api/bugflow/install`, {
+      method: "POST", headers: { "content-type": "text/plain" }, body: '{"instanceId":"governed"}',
+    });
+    expect(result.status).toBe(415);
   });
 
   it("keeps a real permission card pending despite fullAuto, bot auto mode and a saved grant", async () => {

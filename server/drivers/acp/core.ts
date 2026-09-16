@@ -262,6 +262,8 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         asks: Map<string, (behavior: string, source?: "user" | "timeout" | "system") => RequestOutcome>;
       }
       const active = new Map<string, Turn>();
+      const pendingStarts = new Set<string>();
+      let disposed = false;
 
       const emit = (event: RuntimeEvent) => {
         for (const l of [...listeners]) l(event);
@@ -310,7 +312,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
 
       const sendTurn = async (turn: SendTurnInput) => {
         const { threadId } = turn;
-        if (active.has(threadId)) throw new Error("a turn is already running on this thread");
+        if (active.has(threadId) || pendingStarts.has(threadId)) throw new Error("a turn is already running on this thread");
         const turnId = newId();
         const cwd = turn.cwd ?? config.workspace ?? homedir();
         const env = childEnv();
@@ -328,14 +330,18 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           return failBeforeSpawn("Invalid saved session cursor; no new session was created.", "invalid_session");
         }
         if (support.requireReadyBeforeSpawn) {
-          const readiness = await snapshot();
-          if (readiness.state !== "available" || readiness.authenticated !== true) {
-            return failBeforeSpawn(
-              readiness.reason ?? support.loginNote,
-              readiness.state === "available" ? "auth_required" : "unavailable",
-              true,
-            );
-          }
+          pendingStarts.add(threadId);
+          try {
+            const readiness = await snapshot();
+            if (disposed) throw new Error("The provider was disposed during readiness checking; retry the turn.");
+            if (readiness.state !== "available" || readiness.authenticated !== true) {
+              return failBeforeSpawn(
+                readiness.reason ?? support.loginNote,
+                readiness.state === "available" ? "auth_required" : "unavailable",
+                true,
+              );
+            }
+          } finally { pendingStarts.delete(threadId); }
         }
         if (
           support.requireAuthenticationBeforeSpawn
@@ -817,6 +823,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             return decision.behavior === "allow" ? "allowed-once" : "rejected";
           },
           hasSession: (threadId) => active.has(threadId),
+          hasActiveTurns: () => active.size > 0 || pendingStarts.size > 0,
           stopAll: async () => {
             for (const { stop } of active.values()) stop();
           },
@@ -826,6 +833,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           },
         },
         dispose: async () => {
+          disposed = true;
           for (const { stop } of active.values()) stop();
           listeners.clear();
         },

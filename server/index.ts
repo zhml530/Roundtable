@@ -57,6 +57,8 @@ import { isEffortLevel, type RequestOutcome, type RuntimeEvent } from "./contrac
 import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
+import { BugFlowAgentDriver } from "./drivers/acp/bugflow.ts";
+import { BUGFLOW_SOURCE_REF, BugFlowInstaller } from "./bugflow-installer.ts";
 import { getOrCreateChannel, mirrorActivity, mirrorExchange, mirrorReply, type CommsBus } from "./comms-visibility.ts";
 import {
   activeLeafId as storedActiveLeafId,
@@ -2642,6 +2644,46 @@ async function reloadProviders() {
 // and reload sequence single-flight so two settings requests cannot drop one
 // another's changes or dispose a fleet while another reload is creating it.
 let providerConfigBusy = false;
+let bugflowInstallTarget: { instanceId: string; fingerprint: string } | undefined;
+const bugflowInstaller = new BugFlowInstaller({
+  root: join(DATA_DIR, "managed", "bugflow"),
+  configure: async (instanceId, cli) => {
+    if (providerConfigBusy) throw new Error("Provider settings are being changed. Retry when that operation finishes.");
+    const current = instanceConfigs(cfg)[instanceId];
+    if (current?.driver !== "bugflowAgent" || bugflowInstallTarget?.instanceId !== instanceId
+      || JSON.stringify(current) !== bugflowInstallTarget.fingerprint) {
+      throw new Error("The selected engine changed during installation. Its newer settings were not overwritten.");
+    }
+    const previous = registry.get(instanceId);
+    const isActive = () => previous?.adapter.hasActiveTurns?.()
+      || store.bots.some((bot) => bot.busy && bot.modelSelection.instanceId === instanceId);
+    if (isActive()) {
+      throw new Error("This engine has an active conversation. Finish it before reinstalling.");
+    }
+    providerConfigBusy = true;
+    try {
+      const next = withInstanceCli(cfg, instanceId, cli);
+      if (!next.ok) throw new Error("The selected BugFlow instance no longer exists.");
+      const entry = instanceConfigs(next.config)[instanceId];
+      const prepared = await BugFlowAgentDriver.create({
+        instanceId, displayName: entry.displayName ?? "BugFlow Agent", enabled: entry.enabled ?? true,
+        environment: entry.environment ?? {}, config: BugFlowAgentDriver.decodeConfig(entry.config),
+      });
+      if (isActive()) throw new Error("This engine started a conversation during installation. Finish it before reinstalling.");
+      saveConfig({ instances: next.config.instances });
+      cfg.instances = next.config.instances;
+      // Re-subscribe synchronously, without killing any sibling provider or host.
+      bus.detachAll();
+      registry.replacePrepared(prepared, instanceConfigs(cfg), cli);
+      bus.attach(registry.instances());
+      // Persistence is committed. A cleanup error must not make the installer
+      // delete the newly configured EXE as though installation had failed.
+      void previous?.dispose().catch(() => {
+        console.warn("BugFlow: previous idle adapter cleanup failed.");
+      });
+    } finally { providerConfigBusy = false; }
+  },
+});
 
 // ── HTTP plumbing ─────────────────────────────────────────────────────
 function json(res: ServerResponse, status: number, body: unknown) {
@@ -4607,6 +4649,33 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
       return json(res, 200, { instances });
     }
 
+    if (path === "/api/bugflow/install" && method === "GET") {
+      return json(res, 200, {
+        supported: process.platform === "win32", sourceRef: BUGFLOW_SOURCE_REF, installation: bugflowInstaller.status(),
+      });
+    }
+    if (path === "/api/bugflow/install/shutdown" && method === "POST") {
+      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
+        return json(res, 415, { error: "content-type must be application/json" });
+      }
+      await bugflowInstaller.shutdown();
+      return json(res, 200, { installation: bugflowInstaller.status() });
+    }
+    if (path === "/api/bugflow/install" && method === "POST") {
+      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
+        return json(res, 415, { error: "content-type must be application/json" });
+      }
+      const parsed = z.object({ instanceId: z.string().min(1) }).strict().safeParse(await readBody(req));
+      if (!parsed.success) return json(res, 400, { error: "Provide only the selected instanceId." });
+      const { instanceId } = parsed.data;
+      const entry = Object.hasOwn(instanceConfigs(cfg), instanceId) ? instanceConfigs(cfg)[instanceId] : undefined;
+      if (entry?.driver !== "bugflowAgent") return json(res, 400, { error: "Select an existing BugFlow Agent instance." });
+      if (providerConfigBusy) return json(res, 409, { error: "Provider settings are already being updated." });
+      const installation = bugflowInstaller.start(instanceId);
+      bugflowInstallTarget = { instanceId, fingerprint: JSON.stringify(entry) };
+      return json(res, 202, { installation });
+    }
+
     // ── CLI binary discovery for the Engines "detected" dropdown ──
     // ?name=claude → absolute paths of every `claude` on the augmented PATH,
     // in PATH order (first = what a bare name runs). Polled when the user
@@ -4966,6 +5035,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     watchdog.stop();
     routines?.stop();
     webhookIngress?.server.close();
-    void registry.disposeAll().finally(() => process.exit(0));
+    void bugflowInstaller.shutdown()
+      .then(() => registry.disposeAll())
+      .finally(() => process.exit(0));
   });
 }

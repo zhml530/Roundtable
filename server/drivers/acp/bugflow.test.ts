@@ -104,6 +104,22 @@ describe("BugFlow ACP integration", () => {
     expect(instanceConfigs({ instances: { claude: { driver: "claudeAgent" } } }).bugflow?.driver).toBe("bugflowAgent");
   });
 
+  it("counts readiness preflight as active and cannot spawn after disposal", async () => {
+    let release = () => {};
+    const probe: typeof execCli = (_cli, _args, _opts, cb) => {
+      release = () => cb(null, JSON.stringify({ state: "ready", message: "Host ready", version: "0.1.0" }));
+    };
+    const { instance, calls } = await harness("happy", probe);
+    const pending = instance.adapter.sendTurn({ threadId: "pending", text: "hello", model: BUGFLOW_MODEL });
+    expect(instance.adapter.hasActiveTurns?.()).toBe(true);
+    expect(instance.adapter.hasSession("pending")).toBe(false);
+    await instance.dispose();
+    release();
+    await expect(pending).rejects.toThrow("disposed during readiness");
+    expect(instance.adapter.hasActiveTurns?.()).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
   it("streams through a disposable acp bridge without model RPCs, vendor keys or local integrations", async () => {
     const { instance, recorder, dump, calls, methods, children, closed } = await harness();
     expect(instance.adapter.capabilities).toMatchObject({

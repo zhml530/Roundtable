@@ -21,6 +21,8 @@ Build-time prerequisites:
 Roundtable does not install global build tools, request administrator access, or
 start browser/device login. Missing tools or authorization produce an error;
 complete required setup yourself, then retry.
+Use a short data-directory path: deeply nested custom directories can exceed
+Windows path limits in the package's build or executable smoke tests.
 
 The canonical source is
 `https://skype.visualstudio.com/DefaultCollection/SCC/_git/media_intelligence_service`.
@@ -46,9 +48,15 @@ The default managed location is
 `%USERPROFILE%\.Roundtable\managed\bugflow\versions\<commit>-<attempt>\BugFlow.exe`.
 A custom Roundtable data directory also relocates this managed directory.
 Progress is bounded and shown in Settings; only one install runs at a time.
+Normal application exit cancels the owned build process and waits for cleanup.
+After a crash or forced termination, a leftover `install.lock` is reported
+explicitly rather than stolen from a possibly active build.
 Failed source access, builds, tests, or provenance checks leave the previous
 installation and CLI setting unchanged. Existing EXEs are never overwritten,
 including an EXE backing a running host. Unused older versions are retained.
+If the selected engine's settings change during a build, they are not
+overwritten. Finish its active Roundtable conversations before installing;
+other engines are not restarted when the new path is saved.
 
 Successful installation is **not** proof of authentication or host readiness.
 The self-contained EXE includes Python and the SDK runtime, but ADO tools still

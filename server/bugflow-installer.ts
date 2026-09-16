@@ -33,17 +33,24 @@ export interface InstallCommand {
   cwd: string;
   env: NodeJS.ProcessEnv;
   timeoutMs: number;
+  signal?: AbortSignal;
 }
 export type InstallRunner = (command: InstallCommand) => Promise<string>;
 
 /** Commands never launch an interactive shell. Bound both time and output. */
-export const runInstallCommand: InstallRunner = ({ program, args, cwd, env, timeoutMs }) =>
+export const runInstallCommand: InstallRunner = ({ program, args, cwd, env, timeoutMs, signal }) =>
   new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error("Installation cancelled during shutdown."));
     const child = spawnCli(program, args, { cwd, env, stdio: "pipe" });
     child.stdin.end();
     let stdout = "";
     let bytes = 0;
     let failure: Error | undefined;
+    const abort = () => {
+      failure = new Error("Installation cancelled during shutdown.");
+      killCliTree(child);
+    };
+    signal?.addEventListener("abort", abort, { once: true });
     const timer = setTimeout(() => {
       failure = new Error("Command timed out; check network access and build prerequisites before retrying.");
       killCliTree(child);
@@ -69,8 +76,9 @@ export const runInstallCommand: InstallRunner = ({ program, args, cwd, env, time
     });
     child.once("close", (code) => {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
       if (failure) reject(failure);
-      else if (code !== 0) reject(new Error(`Command exited ${code}. Check source access, package downloads and local build prerequisites. No login was started.`));
+      else if (code !== 0) reject(new Error(`Command exited ${code}. Check source access, package downloads and local build prerequisites. For Windows path-length failures, use a shorter Roundtable data directory. No login was started.`));
       else resolve(stdout.trim());
     });
   });
@@ -127,6 +135,8 @@ export class BugFlowInstaller {
   private current: BugFlowInstallStatus = { state: "idle", phase: "idle", message: "", progress: 0 };
   private work: Promise<void> | undefined;
   private busy = false;
+  private closing = false;
+  private controller = new AbortController();
   private readonly run: InstallRunner;
   private readonly options: InstallerOptions;
   constructor(options: InstallerOptions) {
@@ -135,12 +145,19 @@ export class BugFlowInstaller {
   }
   status(): BugFlowInstallStatus { return { ...this.current }; }
   async wait(): Promise<BugFlowInstallStatus> { await this.work; return this.status(); }
+  async shutdown(): Promise<void> {
+    this.closing = true;
+    this.controller.abort();
+    await this.work;
+  }
   start(instanceId: string): BugFlowInstallStatus {
+    if (this.closing) throw Object.assign(new Error("The installer is shutting down. Reopen Roundtable to install."), { status: 409 });
     if ((this.options.platform ?? process.platform) !== "win32") {
       throw Object.assign(new Error("The standalone BugFlow installer requires Windows."), { status: 400 });
     }
     if (this.busy) throw Object.assign(new Error("A BugFlow installation is already running."), { status: 409 });
     this.busy = true;
+    this.controller = new AbortController();
     this.current = {
       state: "running", phase: "prerequisites", message: "Checking Git and Python 3.12 x64...",
       progress: 0, instanceId, attemptId: randomUUID(), startedAt: new Date().toISOString(),
@@ -170,7 +187,7 @@ export class BugFlowInstaller {
       await lock.writeFile(JSON.stringify({ pid: process.pid, attemptId }));
       const env = installerEnvironment();
       const exec = (program: string, args: string[], cwd = root, timeoutMs = 60_000, environment = env) =>
-        this.run({ program, args, cwd, timeoutMs, env: environment });
+        this.run({ program, args, cwd, timeoutMs, env: environment, signal: this.controller.signal });
       await exec("git", ["--version"]);
       const python = await exec("py", ["-3.12", "-c", "import sys,struct; assert sys.version_info[:2] == (3,12) and struct.calcsize('P') == 8; print(sys.executable)"]);
       if (!python || /[\r\n]/.test(python)) throw new Error("Python 3.12 x64 could not be located. Install its Windows launcher and reopen Roundtable.");
@@ -219,6 +236,7 @@ export class BugFlowInstaller {
       const cli = join(deployed, "BugFlow.exe");
       const version = await exec(cli, ["--version"], deployed, 60_000);
       if (!/^bugflow\b[^\r\n]*\d+\.\d+/i.test(version)) throw new Error("The installed EXE did not report a BugFlow version.");
+      if (this.closing) throw new Error("Installation cancelled during shutdown.");
       await this.options.configure(instanceId, cli);
       configured = true;
       this.current = {
