@@ -363,7 +363,6 @@ function RoomWorkingFolderChip({ group, onToggle }: { group: Group; onToggle: ()
       </button>
     );
   }
-  const name = folder.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || folder;
   return (
     <button
       onClick={onToggle}
@@ -371,7 +370,7 @@ function RoomWorkingFolderChip({ group, onToggle }: { group: Group; onToggle: ()
       title={`Working folder: ${folder}`}
     >
       <Folder size={12} />
-      <span className="truncate font-mono">{name}</span>
+      <span className="truncate">Working folder</span>
     </button>
   );
 }
