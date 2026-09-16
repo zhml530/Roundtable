@@ -206,10 +206,12 @@ export function RoomContextMenu({
   menu,
   onClose,
   onMoveToSection,
+  onNewTopic,
 }: {
   menu: { groupId: string; x: number; y: number };
   onClose: () => void;
   onMoveToSection: (groupId: string) => void;
+  onNewTopic?: (channelId: string) => void;
 }) {
   const { state, dispatch } = useStore();
   const group = state.groups.find((g) => g.id === menu.groupId);
@@ -235,7 +237,7 @@ export function RoomContextMenu({
   if (!group) return null;
   const saveRename = () => {
     const name = nextRename(group.name, draft);
-    if (name) dispatch({ type: "patchGroup", groupId: group.id, patch: { name } });
+    if (name) dispatch({ type: "patchGroup", groupId: group.channelId ?? group.id, patch: { name } });
     onClose();
   };
   const top = Math.max(8, Math.min(menu.y, window.innerHeight - 204));
@@ -247,6 +249,13 @@ export function RoomContextMenu({
       style={{ top, left }}
       className="fixed z-50 max-h-[calc(100dvh-16px)] w-[228px] overflow-y-auto rounded-xl border border-hairline/50 bg-card py-1.5 shadow-2xl shadow-black/60"
     >
+      {!group.dm && onNewTopic && (
+        <button onClick={() => { onClose(); onNewTopic(group.channelId ?? group.id); }}
+          className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink hover:bg-raised/70">
+          <Plus size={16} className="text-ink-secondary" />
+          New Topic
+        </button>
+      )}
       {renaming ? (
         <div className="flex items-center gap-1 px-2 py-1">
           <input
@@ -302,7 +311,7 @@ export function RoomContextMenu({
       <button
         onClick={() => {
           onClose();
-          onMoveToSection(group.id);
+          onMoveToSection(group.channelId ?? group.id);
         }}
         className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink hover:bg-raised/70"
       >
@@ -321,7 +330,7 @@ export function RoomContextMenu({
       </button>
       <button
         onClick={() => {
-          dispatch({ type: "deleteGroup", groupId: group.id });
+          dispatch({ type: "deleteGroup", groupId: group.channelId ?? group.id });
           onClose();
         }}
         className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-danger hover:bg-raised/70"

@@ -822,28 +822,34 @@ export class CoordinationManager {
           evaluateResults = true;
           continue;
         }
+        const blockedDecision = run.decisions?.at(-1)?.action === "blocked" ? run.decisions.at(-1) : undefined;
+        const failed = Boolean(blockedDecision) || run.tasks.some((task) =>
+          (task.status === "failed" || task.status === "blocked") && task.resolvedByPlanRevision === undefined);
+        run.answer ??= deterministicFinalAnswer(run);
+        if (!run.answer.trim() && blockedDecision) run.answer = `The Coordinator could not make safe progress: ${blockedDecision.rationale}`;
+        if (!run.answer.trim() && failed) run.answer = "The Channel run could not produce a completed result. See the failure details below.";
+        if (!run.answer.trim()) throw new Error("No final answer could be produced from completed work");
+        await this.refreshProjectState(run, failed ? "failed" : "completed", controller.signal);
+        if (controller.signal.aborted) {
+          if (this.latest(run.groupId)?.status === "cancelled") return;
+          throw new Error("Channel run time limit reached");
+        }
+        if ((run.steerings ?? []).some((steering) => steering.status === "pending")) {
+          run.answer = undefined;
+          run.synthesisError = undefined;
+          steeringSettles += 1;
+          evaluateResults = true;
+          continue;
+        }
+        run.status = failed ? "failed" : "completed";
+        run.finishedAt = this.now();
+        run.error = blockedDecision?.rationale ?? (failed ? "One or more DAG tasks did not complete" : undefined);
+        this.event(run, "run", failed ? "Run finished with failures" : "Run completed");
+        run.report = buildCoordinationReport(run);
+        this.options.appendChannelMessage?.(run.groupId, buildCoordinationAnswer(run), run);
+        this.publish(run);
         break;
       }
-
-      const blockedDecision = run.decisions?.at(-1)?.action === "blocked" ? run.decisions.at(-1) : undefined;
-      const failed = Boolean(blockedDecision) || run.tasks.some((task) =>
-        (task.status === "failed" || task.status === "blocked") && task.resolvedByPlanRevision === undefined);
-      run.answer ??= deterministicFinalAnswer(run);
-      if (!run.answer.trim() && blockedDecision) run.answer = `The Coordinator could not make safe progress: ${blockedDecision.rationale}`;
-      if (!run.answer.trim() && failed) run.answer = "The Channel run could not produce a completed result. See the failure details below.";
-      if (!run.answer.trim()) throw new Error("No final answer could be produced from completed work");
-      await this.refreshProjectState(run, failed ? "failed" : "completed", controller.signal);
-      if (controller.signal.aborted) {
-        if (this.latest(run.groupId)?.status === "cancelled") return;
-        throw new Error("Channel run time limit reached");
-      }
-      run.status = failed ? "failed" : "completed";
-      run.finishedAt = this.now();
-      run.error = blockedDecision?.rationale ?? (failed ? "One or more DAG tasks did not complete" : undefined);
-      this.event(run, "run", failed ? "Run finished with failures" : "Run completed");
-      run.report = buildCoordinationReport(run);
-      this.options.appendChannelMessage?.(run.groupId, buildCoordinationAnswer(run), run);
-      this.publish(run);
     } catch (error) {
       if (run.status !== "cancelled") {
         run.status = "failed";
@@ -924,6 +930,8 @@ export class CoordinationManager {
           },
         }),
       });
+      signal.throwIfAborted();
+      if ((run.steerings ?? []).some((steering) => steering.status === "pending")) return;
       const tokens = (result.usage?.input ?? 0) + (result.usage?.output ?? 0);
       if (run.coordinatorSnapshot.planningBudget.maxTokens !== undefined && tokens > run.coordinatorSnapshot.planningBudget.maxTokens) {
         throw new Error("Project-state checkpoint exceeded the Coordinator token budget");

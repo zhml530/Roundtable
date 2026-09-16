@@ -213,6 +213,9 @@ export interface CoordinationRun {
 
 /** A room: several bots + you in one shared thread. */
 export interface Group {
+  /** Conversation projection: settings belong to this owning Channel. */
+  channelId?: string;
+  topicName?: string;
   memberSessions?: Record<string, string>;
   id: string;
   threadId: string;
@@ -1047,11 +1050,17 @@ export function reducer(state: AppState, action: Action): AppState {
       return updateBot(state, action.botId, (b) => ({ ...b, activeLeafId: cur }));
     }
     // optimistic room edits; the server's group frame confirms them later
-    case "patchGroup":
+    case "patchGroup": {
+      const target = state.groups.find((group) => group.id === action.groupId);
+      const channelId = target?.channelId ?? action.groupId;
+      const { pinnedMessageId: _pin, ...shared } = action.patch;
       return {
         ...state,
-        groups: state.groups.map((g) => (g.id === action.groupId ? { ...g, ...action.patch } : g)),
+        groups: state.groups.map((group) => group.id === action.groupId
+          ? { ...group, ...action.patch }
+          : (group.channelId ?? group.id) === channelId ? { ...group, ...shared } : group),
       };
+    }
     // handled entirely by the async wrapper
     case "pendingQueued": {
       if (state.consumedQueueIds[action.queueId]) {

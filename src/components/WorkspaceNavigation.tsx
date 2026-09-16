@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
-  Bot, CheckCircle2, ChevronDown, ChevronRight, Hash, MessageCircle,
+  Bot, CheckCircle2, Hash, MessageCircle,
   Plus, Search, Settings2, Users, X,
 } from "lucide-react";
 import { formatTime, useStore, type Bot as Agent, type Group } from "@/state/store";
@@ -13,6 +13,7 @@ import { BotPickerList } from "./BotPickerList";
 import { track } from "@/lib/analytics";
 import { useConversationMenus } from "./useConversationMenus";
 import type { conversationMenuBindings } from "@/lib/conversation-menu";
+import { ChannelTree } from "./ChannelTree";
 
 type WorkspaceView = "chats" | "channels" | "tasks" | "agents";
 const CHAT_FILTERS = ["all", "channels", "direct", "unread"] satisfies readonly ChatFilter[];
@@ -63,7 +64,7 @@ function channelChat(group: Group): ChatRow {
   return {
     id: group.id,
     threadId: group.threadId,
-    title: group.name,
+    title: group.topicName ?? group.name,
     owner: group.name,
     kind: "channel",
     at: preview.at || group.createdAt,
@@ -88,7 +89,7 @@ function ConversationRow({ row, selected, onOpen, menuBindings }: {
   onOpen: () => void;
   menuBindings: ReturnType<typeof conversationMenuBindings>;
 }) {
-  const title = row.kind === "channel" ? row.preview : row.title;
+  const title = row.kind === "channel" && !row.group?.topicName ? row.preview : row.title;
   const subtitle = row.kind === "channel" ? `# ${row.owner}` : row.owner;
   return (
     <button
@@ -255,7 +256,12 @@ export function WorkspaceNavigation({ open, onClose }: { open: boolean; onClose:
   const [newChannelOpen, setNewChannelOpen] = useState(false);
   const [pendingChatId, setPendingChatId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const menus = useConversationMenus();
+  const menus = useConversationMenus({
+    onTopicCreated: (topic) => {
+      setExpanded((value) => ({ ...value, [topic.channelId ?? topic.id]: true }));
+      onClose();
+    },
+  });
   const chatMenuBindings = (chat: ChatRow) => menus.bindings(chat.agent
     ? { botId: chat.agent.id, threadId: chat.threadId }
     : { groupId: chat.id });
@@ -264,10 +270,13 @@ export function WorkspaceNavigation({ open, onClose }: { open: boolean; onClose:
     if (state.activeView === "agents") setView("agents");
   }, [state.activeView]);
 
-  const chats = useMemo(() => [
-    ...state.groups.map(channelChat),
-    ...state.bots.filter((agent) => !agent.hidden).flatMap(directChats),
-  ].sort((a, b) => Number(b.agent?.pinned ?? false) - Number(a.agent?.pinned ?? false) || b.at - a.at), [state.bots, state.groups]);
+  const chats = useMemo(() => {
+    const workerThreads = new Set(state.groups.flatMap((group) => Object.values(group.memberSessions ?? {})));
+    return [
+      ...state.groups.map(channelChat),
+      ...state.bots.filter((agent) => !agent.hidden).flatMap(directChats).filter((chat) => !workerThreads.has(chat.threadId)),
+    ].sort((a, b) => Number(b.agent?.pinned ?? false) - Number(a.agent?.pinned ?? false) || b.at - a.at);
+  }, [state.bots, state.groups]);
   const term = query.trim().toLowerCase();
   const visibleChats = chats.filter((chat) =>
     matchesChatFilter(chat, filter) &&
@@ -356,11 +365,10 @@ export function WorkspaceNavigation({ open, onClose }: { open: boolean; onClose:
             {visibleChats.map((chat) => <ConversationRow key={chat.id} row={chat} selected={chat.id === selectedChatId} onOpen={() => openChat(chat)} menuBindings={chatMenuBindings(chat)} />)}
             {visibleChats.length === 0 && <p className="px-3 py-8 text-center text-[13px] text-ink-secondary">No matching chats</p>}
           </>}
-          {view === "channels" && state.groups.map((group) => {
-            const members = group.memberIds.map((id) => state.bots.find((agent) => agent.id === id)).filter((agent): agent is Agent => Boolean(agent));
-            const isOpen = expanded[group.id] ?? true;
-            return <div key={group.id} className="mb-1"><button type="button" {...menus.bindings({ groupId: group.id })} onClick={() => setExpanded((value) => ({ ...value, [group.id]: !isOpen }))} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left hover:bg-raised"><span className="text-ink-secondary">{isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</span><Hash size={16} className="text-accent" /><span className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">{group.name}</span></button>{isOpen && <div className="ml-7 border-l border-hairline/40 pl-2"><button type="button" {...menus.bindings({ groupId: group.id })} onClick={() => openChat(channelChat(group))} className="w-full rounded-md px-2 py-1.5 text-left text-[12px] text-ink-secondary hover:bg-raised hover:text-ink">{group.name}</button><p className="px-2 py-1 text-[11px] text-ink-secondary">Coordinator · {members.length} agents</p></div>}</div>;
-          })}
+          {view === "channels" && <ChannelTree groups={state.groups} expanded={expanded} selectedId={state.selectedId}
+            onToggle={(channelId, isOpen) => setExpanded((value) => ({ ...value, [channelId]: isOpen }))}
+            onOpen={(topic) => openChat(channelChat(topic))} onNewTopic={menus.openNewTopic}
+            bindings={(groupId) => menus.bindings({ groupId })} />}
           {view === "tasks" && <>{chats.filter((chat) => chat.kind === "direct").map((chat) => <button key={chat.id} type="button" {...chatMenuBindings(chat)} onClick={() => openChat(chat)} className="mb-1 w-full rounded-lg border border-hairline/35 px-3 py-2 text-left hover:bg-raised"><span className="flex items-center gap-2 text-[13px] text-ink"><CheckCircle2 size={15} className={chat.agent?.busy ? "text-accent" : "text-ink-secondary"} />{chat.title}</span><span className="ml-6 block truncate text-[11px] text-ink-secondary">{chat.owner} · {chat.agent?.busy ? "In progress" : "Conversation"}</span></button>)}{state.groups.flatMap((group) => group.coordination?.tasks ?? []).map((task) => <button key={task.id} type="button" onClick={() => dispatch({ type: "select", id: state.groups.find((group) => group.coordination?.tasks.some((candidate) => candidate.id === task.id))!.id })} className="mb-1 w-full rounded-lg border border-hairline/35 px-3 py-2 text-left hover:bg-raised"><span className="text-[13px] text-ink">{task.title}</span><span className="block text-[11px] text-ink-secondary">{task.botName} · {task.status}</span></button>)}</>}
           {view === "agents" && state.bots.filter((agent) => !agent.hidden && (!term || `${agent.name} ${agent.title} ${agent.description}`.toLowerCase().includes(term))).map((agent) => <div key={agent.id} className={cn("mb-2 rounded-xl border p-3", state.activeView === "agents" && state.selectedId === agent.id && !state.agentCreateOpen ? "border-accent/50 bg-accent/5" : "border-hairline/50 bg-card")}><button type="button" {...menus.bindings({ botId: agent.id })} onClick={() => dispatch({ type: "selectAgentProfile", botId: agent.id })} className="flex w-full items-center gap-2 text-left"><BotAvatar bot={agent} size={STANDARD_BOT_AVATAR_SIZE} /><span className="min-w-0 flex-1"><span className="block truncate text-[13px] font-medium text-ink">{agent.name}</span><span className="block truncate text-[11px] text-ink-secondary">{agent.title || "Agent"}</span></span><span className="size-2 rounded-full bg-success" title="Connected" /></button><button type="button" onClick={() => createDirectChat(agent)} className="mt-2 w-full rounded-md bg-raised px-2 py-1.5 text-[12px] text-ink hover:bg-raised-hover">New Chat</button></div>)}
         </div>

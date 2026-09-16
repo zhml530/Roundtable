@@ -402,6 +402,7 @@ describe("harness HTTP API", () => {
   });
 
   it("keeps direct-message channels a fixed pair at the API boundary", async () => {
+    expect((await api("POST", "/api/groups/test-dm/topics", { name: "Release" })).status).toBe(400);
     const attempted = await api("PATCH", "/api/groups/test-dm", { memberIds: ["test-bot-a"] });
     expect(attempted.status).toBe(400);
     expect(attempted.body.error).toMatch(/direct-message.*members/i);
@@ -1573,6 +1574,41 @@ describe("harness HTTP API", () => {
     await api("PATCH", "/api/config", { features: { skillRecorder: false } });
   });
 
+  it("creates owned Channel topics and validates names without changing New Channel or DMs", async () => {
+    const bot = (await api("POST", "/api/bots", {})).body.bot;
+    const channel = (await api("POST", "/api/groups", { name: "Topic parent", memberIds: [bot.id] })).body.group;
+    try {
+      const created = await api("POST", `/api/groups/${channel.id}/topics`, { name: " Release " });
+      expect(created.status).toBe(201);
+      expect(created.body.group).toMatchObject({ channelId: channel.id, topicName: "Release", messages: [] });
+      const topic = created.body.group;
+      expect(topic.id).not.toBe(channel.id);
+      expect(topic.threadId).not.toBe(channel.threadId);
+      for (const name of ["", " ", "x".repeat(101), 12, null]) {
+        expect((await api("POST", `/api/groups/${channel.id}/topics`, { name })).status).toBe(400);
+      }
+      expect((await api("POST", "/api/groups/missing/topics", { name: "Release" })).status).toBe(404);
+      await api("PATCH", `/api/groups/${channel.id}`, { bulletin: "Inherited", name: "Renamed parent" });
+      const groups = (await api("GET", "/api/bots")).body.groups;
+      expect(groups.find((g: any) => g.id === channel.id)).toMatchObject({ topicName: "General", threadId: channel.threadId });
+      expect(groups.find((g: any) => g.id === topic.id)).toMatchObject({ bulletin: "Inherited", name: "Renamed parent" });
+      expect((await api("GET", `/api/threads/${topic.threadId}/messages`)).status).toBe(200);
+      expect((await api("GET", `/api/groups/${topic.id}/coordination`)).body.run).toBeNull();
+      await api("PATCH", `/api/groups/${topic.id}`, { pinnedMessageId: "topic-only", unread: true });
+      const updated = (await api("GET", "/api/bots")).body.groups;
+      expect(updated.find((g: any) => g.id === topic.id).pinnedMessageId).toBe("topic-only");
+      expect(updated.find((g: any) => g.id === channel.id).pinnedMessageId).toBeUndefined();
+      const persisted = JSON.parse(readFileSync(join(home, ".Roundtable", "groups.json"), "utf8"));
+      expect(persisted.find((g: any) => g.id === topic.id)).toBeUndefined();
+      expect(persisted.find((g: any) => g.id === channel.id).topics[0].id).toBe(topic.id);
+      await api("DELETE", `/api/groups/${channel.id}`);
+      expect((await api("GET", `/api/threads/${topic.threadId}/messages`)).status).toBe(404);
+    } finally {
+      await api("DELETE", `/api/groups/${channel.id}`);
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
   it("delivers concurrent Channel replies, routes approvals by session, and reuses sessions on follow-up", async () => {
     const botIds: string[] = [];
     let room: any;
@@ -1597,9 +1633,11 @@ describe("harness HTTP API", () => {
       await expect.poll(async () => pending(await channel()).length).toBe(1);
       expect(pending(await channel())[0].source.threadId).toBe(requests[1].source.threadId);
       for (const id of botIds) await api("PATCH", `/api/bots/${id}`, { autoApprove: true });
-      await api("POST", `/api/threads/${room.threadId}/respond`, { requestId: requests[1].card.requestId, sourceThreadId: requests[1].source.threadId, behavior: "allow" });
+      expect((await api("POST", `/api/threads/${room.threadId}/respond`, { requestId: requests[1].card.requestId, sourceThreadId: requests[1].source.threadId, behavior: "allow" })).status).toBe(200);
       await expect.poll(async () => (await api("GET", `/api/groups/${room.id}/coordination`)).body.run?.status, { timeout: 15_000 }).toBe("completed");
       const first = await channel();
+      const generalCheckpoint = join(home, ".Roundtable", "channel-projects", room.id, "PROJECT_STATE.md");
+      expect(existsSync(generalCheckpoint)).toBe(true);
       const delivered = first.messages.findLast((m: any) => m.executionReport);
       expect(delivered.author).toBe("coordinator");
       expect(delivered.text).toBe("The project recommendation is to compare keyframes before adding a VLM.");
@@ -1616,6 +1654,25 @@ describe("harness HTTP API", () => {
       const second = await channel();
       expect(second.memberSessions).toEqual(sessions);
       expect(pending(second)).toHaveLength(0); // attended Auto mode handled the next requests
+      const topic = (await api("POST", `/api/groups/${room.id}/topics`, { name: "Independent project" })).body.group;
+      expect(topic).toBeDefined();
+      expect((await api("POST", `/api/groups/${topic.id}/messages`, { text: "CHANNEL_SESSION_FIXTURE evaluate another project" })).status).toBe(202);
+      await expect.poll(async () => (await api("GET", `/api/groups/${topic.id}/coordination`)).body.run?.status, { timeout: 15_000 }).toBe("completed");
+      const topics = (await api("GET", "/api/bots")).body.groups;
+      const independent = topics.find((g: any) => g.id === topic.id);
+      expect(independent.messages.some((message: any) => message.text === "CHANNEL_SESSION_FIXTURE evaluate the project")).toBe(false);
+      for (const id of botIds) expect(independent.memberSessions[id]).not.toBe(sessions[id]);
+      expect((await channel()).messages).toEqual(second.messages);
+      expect(independent.coordination.groupId).toBe(topic.id);
+      const topicCheckpoint = join(home, ".Roundtable", "channel-projects", topic.id, "PROJECT_STATE.md");
+      expect(existsSync(topicCheckpoint)).toBe(true);
+      expect(topicCheckpoint).not.toBe(generalCheckpoint);
+      const checkpointInput = JSON.parse(JSON.parse(readFileSync(fakeClaudeDump, "utf8")).prompt.message.content);
+      expect(checkpointInput.previousProjectState).toBeNull();
+      const topicDelivery = independent.messages.findLast((message: any) => message.executionReport);
+      const topicArtifact = topicDelivery.artifacts[0];
+      expect((await api("GET", `/api/groups/${topic.id}/artifacts?${new URLSearchParams({ threadId: topicArtifact.threadId, path: topicArtifact.path })}`)).status).toBe(200);
+      expect((await api("GET", `/api/groups/${room.id}/artifacts?${new URLSearchParams({ threadId: topicArtifact.threadId, path: topicArtifact.path })}`)).status).toBe(404);
     } finally {
       if (room) { await settleCoordination(room.id); await api("DELETE", `/api/groups/${room.id}`); }
       for (const id of botIds) await api("DELETE", `/api/bots/${id}`);

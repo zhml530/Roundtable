@@ -988,22 +988,30 @@ describe("Coordinator domain", () => {
     release();
   });
 
-  it("does not let final synthesis race past newly arrived steering", async () => {
+  it.each(["synthesis", "checkpoint"])("does not let %s race past newly arrived steering", async (stage) => {
     const dir = mkdtempSync(join(tmpdir(), "roundtable-steering-synthesis-"));
     dirs.push(dir);
     let releaseSynthesis!: () => void;
     const synthesisGate = new Promise<void>((resolve) => { releaseSynthesis = resolve; });
     let synthesisCalls = 0;
+    let checkpointCalls = 0;
+    const checkpoints: string[] = [];
     let decisionCalls = 0;
     const delivered: string[] = [];
     const manager = new CoordinationManager({
       file: join(dir, "runs.json"), groupBots: () => bots, coordinatorPolicy: policy,
       decideAfterResults: true, synthesize: true,
+      saveProjectState: (_groupId, text) => { checkpoints.push(text); return { bytes: text.length }; },
       runCoordinatorTurn: async ({ purpose }) => {
         if (purpose === "synthesis") {
           synthesisCalls += 1;
-          if (synthesisCalls === 1) await synthesisGate;
+          if (stage === "synthesis" && synthesisCalls === 1) await synthesisGate;
           return { text: synthesisCalls === 1 ? "stale answer" : "answer with steering" };
+        }
+        if (purpose === "checkpoint") {
+          checkpointCalls += 1;
+          if (stage === "checkpoint" && checkpointCalls === 1) await synthesisGate;
+          return { text: synthesisCalls === 1 ? "stale checkpoint" : "checkpoint with steering" };
         }
         if (purpose === "decision") {
           decisionCalls += 1;
@@ -1021,7 +1029,7 @@ describe("Coordinator domain", () => {
       appendChannelMessage: (_groupId, text) => delivered.push(text),
     });
     const run = await manager.start("room", "Create an artifact");
-    await vi.waitFor(() => expect(synthesisCalls).toBe(1));
+    await vi.waitFor(() => expect(stage === "synthesis" ? synthesisCalls : checkpointCalls).toBe(1));
     manager.steer("room", "Add the late requirement", "late-message");
     releaseSynthesis();
     await vi.waitFor(() => expect(run.status).toBe("completed"));
@@ -1029,5 +1037,7 @@ describe("Coordinator domain", () => {
     expect(run.answer).toBe("answer with steering");
     expect(delivered).toEqual([expect.stringContaining("answer with steering")]);
     expect(delivered[0]).not.toContain("stale answer");
+    expect(checkpoints).toEqual(["checkpoint with steering"]);
+    expect(run.steerings?.[0]?.status).toBe("applied");
   });
 });

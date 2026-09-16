@@ -6,6 +6,7 @@ import { initialState, type Bot, type Group } from "@/state/store";
 import { BotContextMenu, RoomContextMenu } from "./Sidebar";
 import { WorkspaceNavigation } from "./WorkspaceNavigation";
 import { AgentChatEmptyState } from "./AgentChatEmptyState";
+import { ChannelTree } from "./ChannelTree";
 
 const { buttons, dispatch, writeText } = vi.hoisted(() => {
   const buttons: ButtonHTMLAttributes<HTMLButtonElement>[] = [];
@@ -164,6 +165,38 @@ describe("restored conversation menus", () => {
     expect(onMoveToSection).toHaveBeenCalledWith("channel");
     expect(writeText).toHaveBeenCalledWith("channel-thread");
     expect(dispatch).toHaveBeenCalledWith({ type: "deleteGroup", groupId: "channel" });
+  });
+
+  it("creates a topic from the channel menu using the same callback as the inline plus", () => {
+    const onNewTopic = vi.fn();
+    renderToStaticMarkup(createElement(RoomContextMenu, {
+      menu: { groupId: group.id, x: 100, y: 100 }, onClose, onMoveToSection, onNewTopic,
+    }));
+    click("New Topic");
+    expect(onNewTopic).toHaveBeenCalledWith(group.id);
+    buttons.length = 0;
+    const topic = { ...group, id: "release", channelId: group.id, topicName: "Release", threadId: "release-thread" };
+    const onOpen = vi.fn();
+    const markup = renderToStaticMarkup(createElement(ChannelTree, {
+      groups: [group, topic], expanded: {}, selectedId: topic.id,
+      onToggle: vi.fn(), onOpen, onNewTopic, bindings: () => ({ onContextMenu: vi.fn(), onKeyDown: vi.fn() }),
+    }));
+    expect(markup).toContain("General");
+    expect(markup).toContain("Release");
+    const plus = buttons.find((props) => props["aria-label"] === "New Topic in Engineering");
+    expect(plus?.className).toContain("group-focus-within:opacity-100");
+    plus?.onClick?.({} as MouseEvent<HTMLButtonElement>);
+    expect(onNewTopic).toHaveBeenCalledTimes(2);
+    click("Release");
+    expect(onOpen).toHaveBeenCalledWith(topic);
+  });
+
+  it("does not offer topics for bot-to-bot DMs", () => {
+    state = { ...state, groups: [{ ...group, dm: true }] };
+    const markup = renderToStaticMarkup(createElement(RoomContextMenu, {
+      menu: { groupId: group.id, x: 100, y: 100 }, onClose, onMoveToSection, onNewTopic: vi.fn(),
+    }));
+    expect(markup).not.toContain("New Topic");
   });
 
   it("wires pointer and keyboard context menus on the actual Chats rows", () => {

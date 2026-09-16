@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useStore, type Bot } from "@/state/store";
+import { useStore, type Bot, type Group } from "@/state/store";
 import { setBotArchived } from "@/lib/bot-archive";
 import { conversationMenuBindings, type ConversationMenuState, type ConversationMenuTarget } from "@/lib/conversation-menu";
 import { ArchivedBotsPanel, BotContextMenu, RoomContextMenu, SectionPicker } from "./Sidebar";
+import { NewTopicDialog } from "./NewTopicDialog";
 
-export function useConversationMenus() {
+export function useConversationMenus({ onTopicCreated }: { onTopicCreated?: (topic: Group) => void } = {}) {
   const { state, dispatch } = useStore();
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -14,6 +15,8 @@ export function useConversationMenus() {
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [feedback, setFeedback] = useState<{ error: boolean; text: string; restoreBot?: Bot } | null>(null);
   const [pending, setPending] = useState(false);
+  const [newTopicChannelId, setNewTopicChannelId] = useState<string | null>(null);
+  const newTopicChannel = state.groups.find((group) => group.id === newTopicChannelId);
   const archivedBots = state.bots.filter((bot) => bot.hidden);
 
   useEffect(() => {
@@ -45,9 +48,11 @@ export function useConversationMenus() {
   });
   const menuKey = menu && ("groupId" in menu ? menu.groupId : `${menu.botId}:${menu.threadId ?? ""}`);
   const overlays = <>
+    {newTopicChannel && <NewTopicDialog channel={newTopicChannel} onClose={() => setNewTopicChannelId(null)} onCreated={onTopicCreated} />}
     {menu && ("groupId" in menu ? (
       <RoomContextMenu key={menuKey} menu={menu} onClose={() => setMenu(null)}
-        onMoveToSection={() => setSectionPicker(menu)} />
+        onNewTopic={setNewTopicChannelId}
+        onMoveToSection={(groupId) => setSectionPicker({ ...menu, groupId })} />
     ) : createPortal(
       <BotContextMenu key={menuKey} menu={menu} threadId={menu.threadId} archivePending={pending} onClose={() => setMenu(null)}
         onArchive={(bot) => { void setArchived(bot, true); }}
@@ -84,5 +89,6 @@ export function useConversationMenus() {
         className="ml-2 text-accent hover:underline disabled:opacity-40">Undo</button>}
     </div>}
   </>;
-  return { bindings, close, overlays, footer };
+  const openNewTopic = (channelId: string) => { close(); setNewTopicChannelId(channelId); };
+  return { bindings, close, overlays, footer, openNewTopic };
 }

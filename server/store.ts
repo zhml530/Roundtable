@@ -118,7 +118,24 @@ export interface Message {
 /** A room: a shared thread where several bots + the user talk. User-created
  * channels are owned by the system Coordinator; `dm` rooms keep their private
  * peer/last-speaker routing. The bulletin is shared context for every task. */
+export interface ChannelTopicRecord {
+  id: string;
+  threadId: ThreadId;
+  name: string;
+  createdAt: number;
+  unread: boolean;
+  memberSessions?: Record<string, string>;
+  pinnedCwd?: string | null;
+  pinnedMessageId?: string;
+  busyBotId?: string | null;
+}
+
+export type GroupConversation = GroupRecord & { channelId?: string; topicName?: string };
+
 export interface GroupRecord {
+  /** Additional topics. The legacy root conversation backs General so old
+   * transcript IDs, run receipts and checkpoint paths remain valid. */
+  topics?: ChannelTopicRecord[];
   memberSessions?: Record<string, string>;
   id: string;
   threadId: ThreadId;
@@ -507,6 +524,7 @@ export class Store {
     }
     for (const g of this.groups) {
       g.busyBotId = null;
+      for (const topic of g.topics ?? []) topic.busyBotId = null;
       // The Coordinator model deliberately drops the legacy channel routing
       // field. It disappears from disk on the next normal store write.
       if (Object.prototype.hasOwnProperty.call(g, "defaultResponder")) {
@@ -534,7 +552,7 @@ export class Store {
     // pending JSON files are touched; already-migrated threads stay lazy.
     const knownThreads = new Set([
       ...this.bots.flatMap((b) => (b.tasks ?? []).map((task) => task.threadId)),
-      ...this.groups.map((group) => group.threadId),
+      ...this.conversations().map((group) => group.threadId),
     ]);
     for (const threadId of knownThreads) {
       const legacyFile = messagesFile(threadId);
@@ -542,7 +560,7 @@ export class Store {
     }
     // Provider requests cannot survive a process restart. Preserve the session
     // cursors, but retire its stale cards in both the session and the Channel.
-    for (const group of this.groups) {
+    for (const group of this.conversations()) {
       for (const threadId of Object.values(group.memberSessions ?? {})) {
         for (const message of this.messagesFor(threadId)) {
           if (message.card?.requestId && !message.card.answered && !message.card.dismissed) {
@@ -558,7 +576,10 @@ export class Store {
   }
 
   private saveGroups() {
-    writeFileAtomic(GROUPS_FILE, JSON.stringify(this.groups.map(({ busyBotId, ...g }) => g), null, 2));
+    writeFileAtomic(GROUPS_FILE, JSON.stringify(this.groups.map(({ busyBotId: _busy, topics, ...g }) => ({
+      ...g,
+      topics: topics?.map(({ busyBotId: _topicBusy, ...topic }) => topic),
+    })), null, 2));
   }
 
   // ── groups ────────────────────────────────────────────────────────────
@@ -583,12 +604,80 @@ export class Store {
     return this.groups.find((g) => g.id === id);
   }
 
-  groupByThread(threadId: string): GroupRecord | undefined {
-    return this.groups.find((g) => g.threadId === threadId);
+  private conversationRecord(id: string): { channel: GroupRecord; record: GroupRecord | ChannelTopicRecord } | undefined {
+    for (const channel of this.groups) {
+      if (channel.id === id) return { channel, record: channel };
+      const topic = channel.topics?.find((candidate) => candidate.id === id);
+      if (topic && !channel.dm) return { channel, record: topic };
+    }
+  }
+
+  conversation(id: string): GroupConversation | undefined {
+    const owner = this.conversationRecord(id);
+    if (!owner) return undefined;
+    const { channel, record } = owner;
+    const { topics: _topics, ...settings } = channel;
+    const conversation: GroupConversation = {
+      ...settings,
+      id: record.id,
+      threadId: record.threadId,
+      createdAt: record.createdAt,
+      unread: record.unread,
+      memberSessions: record.memberSessions,
+      pinnedCwd: record.pinnedCwd === undefined ? channel.pinnedCwd : record.pinnedCwd,
+      pinnedMessageId: record.pinnedMessageId,
+      busyBotId: record.busyBotId,
+    };
+    if (!channel.dm) {
+      conversation.channelId = channel.id;
+      conversation.topicName = record === channel ? "General" : record.name;
+    }
+    return conversation;
+  }
+
+  conversations(channelId?: string): GroupConversation[] {
+    return this.groups.filter((group) => !channelId || group.id === channelId)
+      .flatMap((group) => [group.id, ...(group.dm ? [] : (group.topics ?? []).map((topic) => topic.id))])
+      .map((id) => this.conversation(id)!);
+  }
+
+  createTopic(channelId: string, rawName: string): GroupConversation {
+    const channel = this.group(channelId);
+    if (!channel) throw Object.assign(new Error("no such channel"), { status: 404 });
+    if (channel.dm) throw Object.assign(new Error("direct-message channels cannot have topics"), { status: 400 });
+    if (!rawName.trim() || rawName.trim().length > 100) {
+      throw Object.assign(new Error("topic name must contain 1 to 100 characters"), { status: 400 });
+    }
+    const topic: ChannelTopicRecord = {
+      id: newId(), threadId: newId(), name: rawName.trim(), createdAt: Date.now(), unread: false,
+    };
+    const previous = channel.topics;
+    channel.topics = [...(previous ?? []), topic];
+    try {
+      this.saveGroups();
+    } catch (error) {
+      channel.topics = previous;
+      throw error;
+    }
+    this.emit({ type: "group", groupId: topic.id });
+    return this.conversation(topic.id)!;
+  }
+
+  patchConversation(id: string, patch: Partial<Pick<ChannelTopicRecord, "unread" | "busyBotId" | "pinnedMessageId" | "pinnedCwd" | "memberSessions">>): GroupConversation | null {
+    const owner = this.conversationRecord(id);
+    if (!owner) return null;
+    Object.assign(owner.record, patch);
+    this.saveGroups();
+    this.emit({ type: "group", groupId: id });
+    return this.conversation(id)!;
+  }
+
+  groupByThread(threadId: string): GroupConversation | undefined {
+    return this.conversations().find((g) => g.threadId === threadId);
   }
 
   channelSession(threadId: string): { group: GroupRecord; bot: BotRecord } | undefined {
-    for (const group of this.groups) {
+    for (const group of this.conversations()) {
       if (group.dm) continue;
       const botId = Object.keys(group.memberSessions ?? {}).find((id) => group.memberSessions![id] === threadId && group.memberIds.includes(id));
       const bot = botId ? this.bot(botId) : null;
@@ -596,31 +685,32 @@ export class Store {
     }
   }
 
-  /** Reuse one provider conversation per Channel/Bot, never the direct chat. */
+  /** Reuse one provider conversation per Topic/Bot, never the direct chat. */
   ensureChannelSession(groupId: string, botId: string, adoptThreadId?: string): TaskRecord | null {
-    const group = this.group(groupId);
+    const group = this.conversation(groupId);
     if (!group || group.dm || !group.memberIds.includes(botId)) return null;
     const existing = group.memberSessions?.[botId];
     const task = existing ? this.taskByThread(botId, existing) : undefined;
     if (task) return task;
-    const adoptable = adoptThreadId && !this.groups.some((other) => Object.values(other.memberSessions ?? {}).includes(adoptThreadId))
+    const adoptable = adoptThreadId && !this.conversations().some((other) => Object.values(other.memberSessions ?? {}).includes(adoptThreadId))
       ? this.taskByThread(botId, adoptThreadId) : undefined;
     const created = adoptable ?? this.createTask(botId, `Channel: ${group.name}`, false);
     if (!created) return null;
-    group.pinnedCwd ??= group.cwd ?? null;
+    group.pinnedCwd ??= this.pinGroupCwd(group.channelId ?? group.id);
     if (group.pinnedCwd && created.cwd === undefined && !Object.keys(created.resumeCursors).length) {
       created.cwd = group.pinnedCwd;
       this.saveBots();
     }
-    group.memberSessions = { ...group.memberSessions, [botId]: created.threadId };
-    this.saveGroups();
-    this.emit({ type: "group", groupId });
+    this.patchConversation(groupId, {
+      pinnedCwd: group.pinnedCwd,
+      memberSessions: { ...group.memberSessions, [botId]: created.threadId },
+    });
     return created;
   }
 
   private projectChannelMessage(threadId: string, message: Message): void {
     const session = this.channelSession(threadId);
-    if (!session || message.role !== "bot" || message.source) return;
+    if (!session || message.role !== "bot" || message.kind === "activity" || message.source) return;
     const { group, bot } = session;
     const existing = this.messagesFor(group.threadId).find((m) => m.source?.threadId === threadId && m.source.messageId === message.id);
     const { id, parentId: _parent, ...body } = message;
@@ -663,8 +753,15 @@ export class Store {
     if (patch.memberIds && group.memberSessions) {
       group.memberSessions = Object.fromEntries(Object.entries(group.memberSessions).filter(([botId]) => group.memberIds.includes(botId)));
     }
+    if (patch.memberIds) {
+      for (const topic of group.topics ?? []) {
+        if (topic.memberSessions) topic.memberSessions = Object.fromEntries(
+          Object.entries(topic.memberSessions).filter(([botId]) => group.memberIds.includes(botId)),
+        );
+      }
+    }
     this.saveGroups();
-    this.emit({ type: "group", groupId: group.id });
+    for (const conversation of this.conversations(group.id)) this.emit({ type: "group", groupId: conversation.id });
     return group;
   }
 
@@ -686,6 +783,10 @@ export class Store {
     this.saveGroups();
     this.deleteThreadRecord(group.threadId);
     this.emit({ type: "group.deleted", groupId: id });
+    for (const topic of group.topics ?? []) {
+      this.deleteThreadRecord(topic.threadId);
+      this.emit({ type: "group.deleted", groupId: topic.id });
+    }
     return true;
   }
 
@@ -1015,7 +1116,7 @@ export class Store {
     if (group.pinnedCwd === undefined) {
       group.pinnedCwd = group.cwd ?? null;
       this.saveGroups();
-      this.emit({ type: "group", groupId: group.id });
+      for (const conversation of this.conversations(group.id)) this.emit({ type: "group", groupId: conversation.id });
     }
     return group.pinnedCwd;
   }

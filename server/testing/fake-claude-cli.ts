@@ -157,8 +157,10 @@ const playTurn = (prompt: JsonValue) => {
       turnRunning = false;
       finishIfDone();
     };
-    if (argv.some((arg) => arg.includes("execution decision maker"))) {
+    if (argv.some((arg) => arg.includes("system-owned replanning intelligence"))) {
       finishChannel(JSON.stringify({ action: "complete", rationale: "The fixture findings answer the goal" }));
+    } else if (argv.some((arg) => arg.includes("durable project-state checkpoint"))) {
+      finishChannel("# Project\nCompare historical keyframes first.\n\n# Next steps\nContinue within this topic.");
     } else if (argv.some((arg) => arg.includes("Roundtable Coordinator Intelligence"))) {
       const context = JSON.parse(promptText(prompt).split("<runtime_context>\n")[1]!.split("\n</runtime_context>")[0]!);
       finishChannel(JSON.stringify(context.availableBots.slice(0, 2).map((bot: { id: string }, i: number) => ({ id: `finding-${i}`, title: `Findings ${i}`, role: "architect", botId: bot.id, description: "Answer CHANNEL_SESSION_FIXTURE with evidence" }))));

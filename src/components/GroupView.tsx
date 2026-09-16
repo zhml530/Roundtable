@@ -764,7 +764,9 @@ export function GroupView({ group }: { group: Group }) {
               {memberStack}
             </button>
           )}
-          <span className="min-w-0 truncate text-[15px] font-semibold text-ink">{group.name}</span>
+          <span className="min-w-0 truncate text-[15px] font-semibold text-ink" title={group.name}>
+            {group.topicName ? `${group.name} / ${group.topicName}` : group.name}
+          </span>
         </div>
         <div className="flex items-center gap-1.5" style={noDrag}>
           <button
@@ -916,7 +918,7 @@ export function GroupView({ group }: { group: Group }) {
                   />
                 ))}
               </div>
-              <div className="text-[17px] font-semibold text-ink">{group.name}</div>
+              <div className="text-[17px] font-semibold text-ink">{group.topicName ?? group.name}</div>
               <div className="max-w-[380px] text-[14px] text-ink-secondary">
                 Give Coordinator a goal. Mention a Bot to constrain assignment, or use @everyone to include the whole channel.
               </div>

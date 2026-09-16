@@ -1,16 +1,45 @@
 # Channel conversations and delivery
 
-Channels are coordinated by the system Coordinator. Each `(Channel, Bot)` pair
+Channels contain Topics, coordinated by the system Coordinator. Each `(Topic, Bot)` pair
 owns a persistent provider session, separate from the Bot's direct chat and its
-sessions in other Channels. DAG tasks are assignments within that session, not
+sessions in other Topics or Channels. DAG tasks are assignments within that session, not
 new conversations. Up to two independent tasks run concurrently; turns belonging
-to the same Bot remain serialized.
+to the same Bot remain serialized, including across Topics.
 
-Each Channel also owns a compact project checkpoint at
-`~/.Roundtable/channel-projects/<channel-id>/PROJECT_STATE.md`. This is
+Each Topic also owns a compact project checkpoint at
+`~/.Roundtable/channel-projects/<conversation-id>/PROJECT_STATE.md`. This is
 Roundtable Runtime state, separate from every Bot's private `MEMORY.md` and from
 the user's repository. It survives provider-session loss, model changes, new
 Coordinator runs, and application restarts.
+
+## Topics and compatibility
+
+Right-click a Channel and choose **New Topic**, or use its **+** button, visible
+on hover, keyboard focus, and touch devices. Both open the same name dialog.
+Names must contain 1 to 100 characters after trimming. Successful creation
+expands the Channel and selects the new Topic; errors keep the dialog and name
+open for retry. **New Channel** continues to create a Channel, not a Topic.
+Chats lists Topic names with their owning Channel.
+
+Every existing Channel conversation appears as **General**. Its conversation ID,
+thread, transcript, member sessions, Coordinator receipts, and existing checkpoint
+path are unchanged. The legacy root conversation fields back General; additional
+`ChannelTopicRecord` entries are persisted in the owning `GroupRecord.topics`
+array, not as hidden Channels. Bot-to-bot DMs do not have Topics.
+
+Topics inherit the Channel's current roster, bulletin, context section, setup,
+and working-folder policy. They do not copy settings. The first member session
+pins the Channel's working folder; existing provider sessions never move.
+Transcripts, provider resume cursors, pins, read state, Coordinator runs,
+Steering, approvals, artifacts, and project checkpoints remain Topic-local.
+Removing a Channel member cancels active runs across its Topics before detaching
+that member's sessions. Deleting a Channel removes all its Topic transcripts.
+
+`POST /api/groups/:channelId/topics` creates a Topic. Conversation endpoints keep
+their existing `/api/groups/:conversationId/...` shape: General uses the Channel
+ID, and additional Topics use their own IDs. Bootstrap and event payloads are
+conversation projections carrying `channelId` and `topicName`. Settings resolve
+to the owning Channel; read and pin updates resolve only to the addressed Topic.
 
 Planning uses the Channel roster's Bot IDs, names, titles, and full descriptions.
 Task roles can describe any specialization, including Researcher and Critic;
@@ -58,10 +87,11 @@ flowchart TD
 
 ## Session and event ownership
 
-- `GroupRecord.memberSessions` maps Bot IDs to existing task thread IDs. Provider
+- `ChannelTopicRecord.memberSessions` (or `GroupRecord.memberSessions` for General)
+  maps Bot IDs to existing task thread IDs. Provider
   resume cursors remain on `TaskRecord`, preserving provider/credential isolation.
-- Existing Channels lazily adopt their most recent Coordinator task for a Bot.
-  No direct-chat session or another Channel's session is adopted.
+- Existing conversations lazily adopt their most recent Coordinator task for a Bot.
+  No direct-chat session or another Topic's session is adopted.
 - Bot messages are persisted in their session and projected into the Channel
   with `from` attribution and `source: { threadId, messageId }`. Updates to tool
   and approval cards update that same projection.
@@ -124,6 +154,10 @@ execution details. Cancellation/failure also uses answer-first delivery.
 The Channel API fixture exercises two real harness/provider sessions with
 interleaved replies, identical approval IDs, explicit approval, attended Auto
 mode, synthesis, artifact retrieval, and a follow-up that reuses both sessions.
-Store tests cover restart, cursor isolation, projection updates, legacy adoption,
-and membership removal. Coordinator tests cover scope, fix limits, and separate
-execution/review outcomes.
+Store tests cover Topic restart, cursor isolation, projection updates, legacy
+adoption, inherited settings, and membership removal. The API fixture also runs
+a second Topic with the same Bots, checks separate sessions and checkpoints,
+and verifies artifact access remains conversation-local. Navigation tests cover
+the shared creation action, Channel grouping, selection, errors, and worker-session
+filtering. Coordinator tests cover scope, fix limits, and separate execution/review
+outcomes.

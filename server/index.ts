@@ -129,7 +129,8 @@ import { SPAWNED_PROXIES } from "./proxy-paths.ts";
 import { loadBundledSkills, loadUserSkills, mergeSkills, renderSkillInstructions, selectBundledSkills } from "./skill-library.ts";
 import { installedPlaybookInstructions } from "./installed-playbooks.ts";
 import { createBotPackageExport } from "./package-export.ts";
-import { COORDINATOR_DECISION_PROMPT, COORDINATOR_SYSTEM_PROMPT, COORDINATOR_SYNTHESIS_PROMPT, CoordinationManager } from "./coordination.ts";
+import { COORDINATOR_CHECKPOINT_PROMPT, COORDINATOR_DECISION_PROMPT, COORDINATOR_SYSTEM_PROMPT, COORDINATOR_SYNTHESIS_PROMPT, CoordinationManager } from "./coordination.ts";
+import { loadChannelProjectState, writeChannelProjectState } from "./channel-project-state.ts";
 
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
 const WEBHOOK_PORT = Number(process.env.OMB_WEBHOOK_PORT || PORT + 1);
@@ -357,7 +358,7 @@ store.onChange((change) => {
       broadcast({ kind: "bot.deleted", botId: change.botId });
       break;
     case "group": {
-      const group = store.group(change.groupId);
+      const group = store.conversation(change.groupId);
       if (group) broadcast({ kind: "group", group: { ...group, coordination: coordination?.latest(group.id) } });
       break;
     }
@@ -1719,12 +1720,14 @@ coordination = new CoordinationManager({
   emit: broadcast,
   synthesize: true,
   decideAfterResults: true,
+  loadProjectState: loadChannelProjectState,
+  saveProjectState: writeChannelProjectState,
   channelContext: (groupId) => {
-    const group = store.group(groupId);
+    const group = store.conversation(groupId);
     return group ? `${group.bulletin}\n${serializeRoomContext(group.threadId, cfg.profile?.name?.trim() || "User")}` : "";
   },
   groupBots: (groupId) => {
-    const group = store.group(groupId);
+    const group = store.conversation(groupId);
     if (!group) return [];
     return group.memberIds.flatMap((botId) => {
       const bot = store.bot(botId);
@@ -1796,7 +1799,7 @@ coordination = new CoordinationManager({
     await registry.get(bot?.modelSelection.instanceId ?? "")?.adapter.interruptTurn(threadId);
   },
   appendChannelMessage: (groupId, text, run) => {
-    const group = store.group(groupId);
+    const group = store.conversation(groupId);
     if (!group) return;
     const delivery = {
       executionReport: run?.report,
@@ -1875,7 +1878,9 @@ coordination = new CoordinationManager({
       text: prompt,
       model: selection.model,
       effort: selection.effort,
-      system: purpose === "synthesis" ? COORDINATOR_SYNTHESIS_PROMPT : purpose === "decision" ? COORDINATOR_DECISION_PROMPT : COORDINATOR_SYSTEM_PROMPT,
+      system: purpose === "checkpoint" ? COORDINATOR_CHECKPOINT_PROMPT
+        : purpose === "synthesis" ? COORDINATOR_SYNTHESIS_PROMPT
+        : purpose === "decision" ? COORDINATOR_DECISION_PROMPT : COORDINATOR_SYSTEM_PROMPT,
     }).catch((error) => finish(error instanceof Error ? error : new Error(String(error))));
   }),
 });
@@ -2180,9 +2185,9 @@ async function runGroupMemberTurn(
 }
 
 async function startGroupTurn(groupId: string, text: string, replyTo?: Message) {
-  const group = store.group(groupId);
+  const group = store.conversation(groupId);
   if (!group) throw Object.assign(new Error("no such group"), { status: 404 });
-  if (roomSetupPending(group)) {
+  if (roomSetupPending(store.group(group.channelId ?? group.id)!)) {
     throw Object.assign(new Error("finish room setup before sending the first message"), { status: 409 });
   }
   if (!group.dm) {
@@ -3148,7 +3153,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
       if (limit === null) return json(res, 400, { error: "messages must be a non-negative whole number" });
       return json(res, 200, {
         bots: store.bots.map((bot) => pagedPublicBot(bot, limit)),
-        groups: store.groups.map((g) => ({
+        groups: store.conversations().map((g) => ({
           ...g,
           lastMessage: messagePreview(latestMessage(g.threadId)),
           coordination: coordination?.latest(g.id),
@@ -3366,7 +3371,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
         }
       }
       const group = store.createGroup(name, memberIds, false, section);
-      return json(res, 201, { group: { ...group, messages: [] } });
+      return json(res, 201, { group: { ...store.conversation(group.id), messages: [] } });
     }
     if (method === "POST" && path === "/api/teams/export") {
       const body = await readBody(req);
@@ -3657,9 +3662,18 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
         throw error;
       }
     }
+    m = path.match(/^\/api\/groups\/([\w-]+)\/topics$/);
+    if (m && method === "POST") {
+      const parsed = z.object({ name: z.string() }).safeParse(await readBody(req));
+      if (!parsed.success) return json(res, 400, { error: "topic name must be a string" });
+      const group = store.createTopic(m[1], parsed.data.name);
+      return json(res, 201, { group: { ...group, messages: [] } });
+    }
+
     m = path.match(/^\/api\/groups\/([\w-]+)\/setup$/);
     if (m && method === "PATCH") {
-      const group = store.group(m[1]);
+      const conversation = store.conversation(m[1]);
+      const group = conversation && store.group(conversation.channelId ?? conversation.id);
       if (!group) return json(res, 404, { error: "no such room" });
       if (group.dm) return json(res, 400, { error: "direct-message channels do not have room setup" });
       const body = await readBody(req);
@@ -3688,15 +3702,16 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
       } else {
         patch.setupSkippedAt = Date.now();
       }
-      const updated = store.patchGroup(m[1], patch);
+      const updated = store.patchGroup(group.id, patch);
       if (!updated) return json(res, 404, { error: "no such room" });
-      return json(res, 200, { group: updated });
+      return json(res, 200, { group: store.conversation(m[1]) });
     }
     m = path.match(/^\/api\/groups\/([\w-]+)$/);
     if (m && method === "PATCH") {
       const body = await readBody(req);
-      const existing = store.group(m[1]);
+      const existing = store.conversation(m[1]);
       if (!existing) return json(res, 404, { error: "no such room" });
+      const channelId = existing.channelId ?? existing.id;
       if (body.defaultResponder !== undefined) {
         return json(res, 400, { error: "Channel responder routing was removed; Coordinator owns all user-channel messages" });
       }
@@ -3724,7 +3739,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
       }
       if (body.cwd !== undefined) {
         if (existing.dm) return json(res, 400, { error: "direct-message channels cannot have a working folder" });
-        if (existing.pinnedCwd !== undefined) {
+        if (store.group(channelId)?.pinnedCwd !== undefined) {
           return json(res, 409, { error: "the room's working folder is fixed after its first turn" });
         }
         const checked = validateBotCwd(body.cwd);
@@ -3752,10 +3767,25 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
         }
       }
       if (Array.isArray(patch.memberIds) && existing.memberIds.some((id) => !(patch.memberIds as string[]).includes(id))) {
-        const run = coordination?.latest(existing.id);
-        if (run && ["planning", "validating", "running", "paused", "reviewing"].includes(run.status)) await coordination!.cancel(existing.id);
+        for (const conversation of store.conversations(channelId)) {
+          if (coordination?.active(conversation.id)) await coordination.cancel(conversation.id);
+          for (const [botId, threadId] of Object.entries(conversation.memberSessions ?? {})) {
+            if (!(patch.memberIds as string[]).includes(botId)) closeOpenApprovals(threadId);
+          }
+        }
       }
-      const group = store.patchGroup(m[1], patch);
+      const local: Partial<Pick<GroupRecord, "unread" | "pinnedMessageId">> = {};
+      if ("unread" in patch) {
+        if (typeof patch.unread !== "boolean") return json(res, 400, { error: "unread must be a boolean" });
+        local.unread = patch.unread;
+        delete patch.unread;
+      }
+      if ("pinnedMessageId" in patch) {
+        local.pinnedMessageId = typeof patch.pinnedMessageId === "string" ? patch.pinnedMessageId : undefined;
+        delete patch.pinnedMessageId;
+      }
+      if (Object.keys(patch).length) store.patchGroup(channelId, patch);
+      const group = Object.keys(local).length ? store.patchConversation(m[1], local) : store.conversation(m[1]);
       if (!group) return json(res, 404, { error: "no such room" });
       return json(res, 200, { group });
     }
@@ -3763,11 +3793,11 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
     // ── Coordinator channel: goal → OMA DAG → normal Roundtable bot tasks ──
     m = path.match(/^\/api\/groups\/([\w-]+)\/coordination$/);
     if (m && method === "GET") {
-      if (!store.group(m[1])) return json(res, 404, { error: "no such room" });
+      if (!store.conversation(m[1])) return json(res, 404, { error: "no such room" });
       return json(res, 200, { run: coordination!.latest(m[1]) ?? null });
     }
     if (m && method === "POST") {
-      if (!store.group(m[1])) return json(res, 404, { error: "no such room" });
+      if (!store.conversation(m[1])) return json(res, 404, { error: "no such room" });
       const body = await readBody(req);
       if (typeof body.goal !== "string") return json(res, 400, { error: "goal must be a string" });
       try {
@@ -3778,7 +3808,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
     }
     m = path.match(/^\/api\/groups\/([\w-]+)\/coordination\/(pause|resume|cancel|retry)$/);
     if (m && method === "POST") {
-      if (!store.group(m[1])) return json(res, 404, { error: "no such room" });
+      if (!store.conversation(m[1])) return json(res, 404, { error: "no such room" });
       try {
         const body = m[2] === "retry" ? await readBody(req) : {};
         const run = m[2] === "pause"
@@ -3802,7 +3832,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
     }
     m = path.match(/^\/api\/groups\/([\w-]+)\/read$/);
     if (m && method === "POST") {
-      const group = store.patchGroup(m[1], { unread: false });
+      const group = store.patchConversation(m[1], { unread: false });
       if (!group) return json(res, 404, { error: "no such room" });
       broadcast({ kind: "group", group });
       return json(res, 200, { group });
@@ -3811,14 +3841,16 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
     if (m && method === "DELETE") {
       const group = store.group(m[1]);
       if (!group) return json(res, 404, { error: "no such room" });
-      const run = coordination?.latest(group.id);
-      if (run && ["planning", "validating", "running", "paused", "reviewing"].includes(run.status)) await coordination!.cancel(group.id);
-      for (const threadId of Object.values(group.memberSessions ?? {})) closeOpenApprovals(threadId);
-      lastReply.delete(group.threadId);
+      const conversations = store.conversations(group.id);
+      for (const conversation of conversations) {
+        if (coordination?.active(conversation.id)) await coordination.cancel(conversation.id);
+        for (const threadId of Object.values(conversation.memberSessions ?? {})) closeOpenApprovals(threadId);
+        lastReply.delete(conversation.threadId);
+      }
       store.deleteGroup(group.id);
-      for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
+      for (const conversation of conversations) for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
         try {
-          unlinkSync(join(dir, `${group.threadId}.ndjson`));
+          unlinkSync(join(dir, `${conversation.threadId}.ndjson`));
         } catch {}
       }
       return json(res, 200, { ok: true });
@@ -3828,7 +3860,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
       const body = await readBody(req);
       const text = String(body.text ?? "").trim();
       if (!text) return json(res, 400, { error: "text required" });
-      const group = store.group(m[1]);
+      const group = store.conversation(m[1]);
       if (!group) return json(res, 404, { error: "no such group" });
       const replyTo = resolveReplyTarget(group.threadId, body.replyToId);
       await startGroupTurn(group.id, text, replyTo);
@@ -3836,7 +3868,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
     }
     m = path.match(/^\/api\/groups\/([\w-]+)\/interrupt$/);
     if (m && method === "POST") {
-      const group = store.group(m[1]);
+      const group = store.conversation(m[1]);
       if (!group) return json(res, 404, { error: "no such room" });
       const run = coordination?.latest(group.id);
       if (run && ["planning", "validating", "running", "paused", "reviewing"].includes(run.status)) await coordination!.cancel(group.id);
@@ -4358,7 +4390,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
     // Only artifact records already published into this Channel are readable.
     m = path.match(/^\/api\/groups\/([\w-]+)\/artifacts$/);
     if (m && method === "GET") {
-      const group = store.group(m[1]);
+      const group = store.conversation(m[1]);
       if (!group) return json(res, 404, { error: "No such Channel" });
       const requestedPath = url.searchParams.get("path");
       const requestedThread = url.searchParams.get("threadId");
