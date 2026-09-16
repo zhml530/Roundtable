@@ -206,6 +206,7 @@ function agentsIntegration(botId: string, threadId: string, depth: number) {
     env: {
       ...AGENTS_NODE_FLAG,
       OMB_HARNESS_PIPE: process.env.OMB_HARNESS_PIPE ?? "",
+      OMB_HARNESS_URL: `http://127.0.0.1:${PORT}`,
       OMB_BOT_ID: botId,
       OMB_THREAD_ID: threadId,
       OMB_COMMS_TOKEN: COMMS_TOKEN,
