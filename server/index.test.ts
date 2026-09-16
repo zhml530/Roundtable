@@ -1735,6 +1735,7 @@ describe("harness HTTP API", () => {
       }, { timeout: 5_000 }).toBe(true);
       const dump = JSON.parse(readFileSync(fakeClaudeDump, "utf8"));
       const proxyEnv = dump.mcpConfig.mcpServers.agents.env;
+      expect(proxyEnv.OMB_HARNESS_URL).toBe(BASE);
       const run = (await api("GET", `/api/groups/${room.id}/coordination`)).body.run;
       expect(run.tasks.some((task: { threadId?: string }) => task.threadId === proxyEnv.OMB_THREAD_ID)).toBe(true);
       for (const endpoint of ["ask-bot", "delegate-bot"]) {
