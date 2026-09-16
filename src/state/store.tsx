@@ -265,6 +265,7 @@ export type TaskCheckpoint = {
 export interface Task {
   threadId: string;
   title: string;
+  titleSource?: "first-message" | "generated" | "user" | "assigned";
   createdAt: number;
   /** what this task has spent, banked once per settled turn */
   usage?: TaskUsage;

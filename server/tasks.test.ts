@@ -90,12 +90,37 @@ describe("tasks", () => {
     expect(store.activeTask(bot.id)!.title).toBe(UNTITLED_TASK);
 
     store.titleTaskFromFirstMessage(bot.id, "Audit the payroll spreadsheet\nand flag anything odd");
-    expect(store.activeTask(bot.id)!.title).toBe("Audit the payroll spreadsheet");
+    expect(store.activeTask(bot.id)).toMatchObject({
+      title: "Audit the payroll spreadsheet",
+      titleSource: "first-message",
+    });
 
     // only the first message names it
     store.titleTaskFromFirstMessage(bot.id, "something else entirely");
     expect(store.activeTask(bot.id)!.title).toBe("Audit the payroll spreadsheet");
     expect(titleFromMessage("x".repeat(80))).toHaveLength(48);
+  });
+
+  it("lets a generated title replace only the first-message fallback", async () => {
+    const { store } = await freshStore();
+    const bot = store.createBot();
+    store.titleTaskFromFirstMessage(bot.id, "Please investigate the startup race");
+    expect(store.claimTaskTitleGeneration(bot.id, bot.threadId)).toBe(true);
+    expect(store.claimTaskTitleGeneration(bot.id, bot.threadId)).toBe(false);
+
+    expect(store.setGeneratedTaskTitle(bot.id, bot.threadId, "Startup Race Investigation")).toMatchObject({
+      title: "Startup Race Investigation",
+      titleSource: "generated",
+    });
+    expect(store.setGeneratedTaskTitle(bot.id, bot.threadId, "Late Replacement")).toBeNull();
+
+    store.renameTask(bot.id, bot.threadId, "My title");
+    expect(store.setGeneratedTaskTitle(bot.id, bot.threadId, "Async overwrite")).toBeNull();
+    expect(store.activeTask(bot.id)).toMatchObject({ title: "My title", titleSource: "user" });
+
+    const assigned = store.createTask(bot.id, "Assigned work")!;
+    expect(assigned.titleSource).toBe("assigned");
+    expect(store.setGeneratedTaskTitle(bot.id, assigned.threadId, "Generated overwrite")).toBeNull();
   });
 
   it("deletes any chat and its transcript, including the agent's last chat", async () => {

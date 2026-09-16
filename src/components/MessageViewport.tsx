@@ -65,7 +65,7 @@ function ViewportHeader({ context }: { context: MessageViewportContext }) {
 function ViewportFooter({ context }: { context: MessageViewportContext }) {
   if (context.empty) return null;
   return context.footer
-    ? <div className="flex flex-col gap-3 pt-3 pb-14">{context.footer}</div>
+    ? <div className="mx-auto flex w-[calc(100%-2.5rem)] max-w-[900px] flex-col gap-3 pt-3 pb-14">{context.footer}</div>
     : <div className="h-14" aria-hidden="true" />;
 }
 
