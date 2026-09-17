@@ -994,7 +994,22 @@ const requestSignalQuit = () => {
 process.once("SIGINT", requestSignalQuit);
 process.once("SIGTERM", requestSignalQuit);
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
+  if (process.platform === "win32" && orchestrationProc && !appQuitting) {
+    event.preventDefault();
+    appQuitting = true;
+    if (nativeActions.appleSpeech) stopSpeech();
+    stopRecorder();
+    // Windows utility-process termination cannot deliver a graceful SIGTERM.
+    // Stop only the managed build tree and release its lock before killing it.
+    void invokeOrchestration({
+      path: "/api/bugflow/install/shutdown", method: "POST",
+      headers: { "content-type": "application/json" }, body: "{}",
+    }, 60_000).catch(() => {
+      slog("BugFlow installer shutdown did not complete before application exit.");
+    }).finally(() => app.quit());
+    return;
+  }
   appQuitting = true;
   try {
     orchestrationProc?.kill();

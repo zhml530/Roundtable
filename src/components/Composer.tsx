@@ -346,6 +346,12 @@ export function Composer({
     return eligible.length > 0 && eligible.every(botSupportsImages);
   };
   const engineSupportsImages = imageTargetsSupport(text);
+  const fileUnsupportedNotice = "The selected agent does not accept local file or image attachments.";
+  const fileTargets = group ? (members ?? []).filter((member) => !member.hidden) : bot ? [bot] : [];
+  const engineSupportsFiles = fileTargets.every((target) => {
+    const instance = state.instances.find((candidate) => candidate.instanceId === target.modelSelection.instanceId);
+    return instance?.capabilities?.files !== false;
+  });
 
   // ── @mention picker (tag another bot; the agent reaches it via ask_bot) ──
   const mention = mentionQueryAt(text, caret);
@@ -407,10 +413,16 @@ export function Composer({
   const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null);
   // A Channel control updates every member's own policy. Runtime approvals
   // still belong to the exact Agent session that requested the action.
-  const permissionBots = group ? (members ?? []) : bot ? [bot] : [];
+  const permissionBots = (group ? (members ?? []) : bot ? [bot] : []).filter((target) =>
+    state.instances.find((instance) => instance.instanceId === target.modelSelection.instanceId)?.capabilities?.explicitApprovals !== true,
+  );
   const permissionTargetName = group ? `${group.name} agents` : (bot?.name ?? "this agent");
   const pickFiles = async (picked: FileList | null) => {
     if (!picked?.length) return;
+    if (!engineSupportsFiles) {
+      setAttachmentNotice(fileUnsupportedNotice);
+      return;
+    }
     const { attachments: added, notice } = await intakeFiles(Array.from(picked), {
       allowImages: engineSupportsImages,
       getPath: pathForFile,
@@ -430,6 +442,10 @@ export function Composer({
   const hasContent = Boolean(text.trim()) || attachments.length > 0;
   const send = () => {
     if (locked) return;
+    if (!engineSupportsFiles && attachments.some((attachment) => attachment.kind !== "paste")) {
+      setAttachmentNotice(fileUnsupportedNotice);
+      return;
+    }
     if (attachments.some((attachment) => attachment.kind === "image") && !imageTargetsSupport(text)) {
       dispatch({ type: "error", message: "The selected responder does not support image attachments." });
       return;
@@ -457,6 +473,11 @@ export function Composer({
   useEffect(() => {
     if (busy || !queued) return;
     if (group) {
+      if (!engineSupportsFiles && /<attached-(?:file|image)\b/.test(queued.text)) {
+        dispatch({ type: "error", message: fileUnsupportedNotice });
+        setQueued(null);
+        return;
+      }
       if (queued.text.includes("<attached-image ") && !imageTargetsSupport(queued.text)) {
         dispatch({ type: "error", message: "The selected responder does not support image attachments." });
         setQueued(null);
@@ -599,6 +620,7 @@ export function Composer({
           onAdd={addAttachments}
           onRemove={removeAttachment}
           allowImages={engineSupportsImages}
+          allowFiles={engineSupportsFiles}
           notice={attachmentNotice}
           onNotice={setAttachmentNotice}
         />
@@ -606,6 +628,7 @@ export function Composer({
           <input
             ref={fileInput}
             type="file"
+            disabled={!engineSupportsFiles}
             multiple
             className="hidden"
             onChange={(e) => {
@@ -620,8 +643,9 @@ export function Composer({
                 type="button"
                 onClick={() => fileInput.current?.click()}
                 aria-label="Attach a file"
-                title="Attach a file"
-                className="flex size-8 shrink-0 items-center justify-center rounded-full text-ink-secondary hover:bg-control hover:text-ink"
+                title={engineSupportsFiles ? "Attach a file" : fileUnsupportedNotice}
+                disabled={!engineSupportsFiles}
+                className="flex size-8 shrink-0 items-center justify-center rounded-full text-ink-secondary hover:bg-control hover:text-ink disabled:opacity-40"
               >
                 <Paperclip size={17} />
               </button>
@@ -642,6 +666,11 @@ export function Composer({
             setDismissedAt(null);
           }}
           onPaste={(e) => {
+            if (!engineSupportsFiles && e.clipboardData.files.length) {
+              e.preventDefault();
+              setAttachmentNotice(fileUnsupportedNotice);
+              return;
+            }
             // an image from the clipboard becomes an uploaded attachment —
             // but only for engines that can open one; a grok bot politely
             // refuses instead of receiving a path it cannot read

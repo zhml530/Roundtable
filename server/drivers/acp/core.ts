@@ -39,6 +39,7 @@ import type {
   RuntimeEventListener,
   SendTurnInput,
   ProviderErrorCode,
+  RequestOutcome,
 } from "../../contracts.ts";
 import { newEventId, newId } from "../../contracts.ts";
 import { computerProxyEnv } from "../../computer-proxy-env.ts";
@@ -98,6 +99,16 @@ export interface AcpSupport {
   effortLevels?: readonly EffortLevel[];
   /** Default CLI binary name if the instance config doesn't override it. */
   defaultCli: string;
+  spawnProcess?: typeof spawnCli;
+  probeSnapshot?(environment: Record<string, string | undefined>, config: AcpConfig): Promise<ProviderSnapshot>;
+  requireReadyBeforeSpawn?: boolean;
+  /** Never replace a saved session with a fresh one after a failed load. */
+  strictResume?: boolean;
+  /** Governed agents own their model and require an explicit, one-action grant. */
+  fixedModel?: string;
+  permissionPolicy?: "explicit-once";
+  localIntegrations?: boolean;
+  files?: boolean;
   /** Optional live model catalog. A failed lookup keeps the last usable catalog.
    *  `config` is the instance decode so a support can ask the same binary it
    *  will spawn (custom `cli` paths), not whatever happens to be named on PATH. */
@@ -248,9 +259,11 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         stop: () => void;
         interrupt: () => void;
         turnId: string;
-        asks: Map<string, (behavior: string, source?: "user" | "timeout" | "system") => void>;
+        asks: Map<string, (behavior: string, source?: "user" | "timeout" | "system") => RequestOutcome>;
       }
       const active = new Map<string, Turn>();
+      const pendingStarts = new Set<string>();
+      let disposed = false;
 
       const emit = (event: RuntimeEvent) => {
         for (const l of [...listeners]) l(event);
@@ -299,10 +312,37 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
 
       const sendTurn = async (turn: SendTurnInput) => {
         const { threadId } = turn;
-        if (active.has(threadId)) throw new Error("a turn is already running on this thread");
+        if (active.has(threadId) || pendingStarts.has(threadId)) throw new Error("a turn is already running on this thread");
         const turnId = newId();
         const cwd = turn.cwd ?? config.workspace ?? homedir();
         const env = childEnv();
+        const failBeforeSpawn = (message: string, stopReason: string, setup = false) => {
+          emit({ ...base(threadId, turnId), type: "turn.started" });
+          emit({ ...base(threadId, turnId), type: "runtime.error", message, ...(setup ? { setup: true } : {}) });
+          emit({ ...base(threadId, turnId), type: "turn.completed", ok: false, stopReason, cost: null });
+          return { turnId };
+        };
+        if (support.fixedModel && turn.model !== undefined && turn.model !== support.fixedModel) {
+          return failBeforeSpawn(`${support.displayName} controls its model; select ${support.fixedModel}.`, "invalid_model");
+        }
+        if (support.strictResume && turn.resumeCursor != null
+          && (typeof turn.resumeCursor !== "string" || !turn.resumeCursor.trim())) {
+          return failBeforeSpawn("Invalid saved session cursor; no new session was created.", "invalid_session");
+        }
+        if (support.requireReadyBeforeSpawn) {
+          pendingStarts.add(threadId);
+          try {
+            const readiness = await snapshot();
+            if (disposed) throw new Error("The provider was disposed during readiness checking; retry the turn.");
+            if (readiness.state !== "available" || readiness.authenticated !== true) {
+              return failBeforeSpawn(
+                readiness.reason ?? support.loginNote,
+                readiness.state === "available" ? "auth_required" : "unavailable",
+                true,
+              );
+            }
+          } finally { pendingStarts.delete(threadId); }
+        }
         if (
           support.requireAuthenticationBeforeSpawn
           && !skipSubscriptionAuthForLocalInject(turn.model)
@@ -319,16 +359,16 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           resolvedModel !== undefined && resolvedModel !== turn.model
             ? { ...turn, model: resolvedModel }
             : turn;
-        const mcpServers = acpMcpServers(turn);
+        const mcpServers = support.localIntegrations === false ? [] : acpMcpServers(turn);
 
-        const child = spawnCli(config.cli, support.spawnArgs(config, cliTurn), {
+        const child = (support.spawnProcess ?? spawnCli)(config.cli, support.spawnArgs(config, cliTurn), {
           cwd,
           env,
           stdio: ["pipe", "pipe", "pipe"],
         });
 
         const state = { settled: false, promptSent: false, text: "" };
-        const asks = new Map<string, (behavior: string, source?: "user" | "timeout" | "system") => void>();
+        const asks = new Map<string, (behavior: string, source?: "user" | "timeout" | "system") => RequestOutcome>();
         let nextId = 1;
         let sessionId: string | null = null;
         let interruptTimer: ReturnType<typeof setTimeout> | null = null;
@@ -391,10 +431,16 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             return send({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "method not found" } });
           }
           const params = msg.params ?? {};
+          if (support.permissionPolicy === "explicit-once"
+            && (!state.promptSent || params._meta?.isReplay === true || state.settled)) {
+            return send({ jsonrpc: "2.0", id: msg.id, result: { outcome: { outcome: "cancelled" } } });
+          }
           flushAssistantText();
           const options: Array<{ optionId?: string; kind?: string }> = Array.isArray(params.options) ? params.options : [];
           const optionFor = (want: "allow" | "reject") =>
-            options.find((o) => String(o.kind ?? "").startsWith(want) && typeof o.optionId === "string")?.optionId ?? null;
+            options.find((o) => (
+              support.permissionPolicy === "explicit-once" ? o.kind === `${want}_once` : String(o.kind ?? "").startsWith(want)
+            ) && typeof o.optionId === "string")?.optionId ?? null;
           const cancelled = { outcome: { outcome: "cancelled" } };
           const missing = (want: string) =>
             emit({
@@ -404,7 +450,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             });
 
           const toolCall = params.toolCall ?? {};
-          if (config.fullAuto) {
+          if (config.fullAuto && support.permissionPolicy !== "explicit-once") {
             const allow = optionFor("allow");
             if (!allow) missing("allow");
             return send({
@@ -417,8 +463,8 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           const tool = kind === "execute" ? "shell" : kind === "edit" ? "edit" : kind || "tool";
           const summary = String(toolCall.rawInput?.command ?? toolCall.title ?? tool).slice(0, 200);
           const requestId = newId();
-          const finish = (behavior: string, source: "user" | "timeout" | "system" = "user") => {
-            if (!asks.delete(requestId)) return;
+          const finish = (behavior: string, source: "user" | "timeout" | "system" = "user"): RequestOutcome => {
+            if (!asks.delete(requestId)) return "unavailable";
             clearTimeout(timer);
             const want = behavior === "allow" ? "allow" : "reject";
             const optionId = behavior === "cancel" ? null : optionFor(want);
@@ -435,6 +481,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               behavior: optionId && behavior === "allow" ? "allow" : "deny",
               source: optionId ? source : "system",
             });
+            return optionId && behavior === "allow" ? "allowed-once" : "rejected";
           };
           const timer = setTimeout(() => {
             emit({ ...base(threadId, turnId), type: "runtime.error", message: DENY_TIMEOUT_NOTE });
@@ -595,14 +642,24 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             const cursor = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
             let sessionResult: any = null;
             if (cursor) {
+              if (support.strictResume && init?.agentCapabilities?.loadSession !== true) {
+                throw new Error(`${support.displayName} does not advertise ACP session loading; no new session was created.`);
+              }
               try {
                 sessionResult = await request(
                   "session/load",
                   { sessionId: cursor, cwd, mcpServers },
                   LOAD_SESSION_TIMEOUT,
                 );
+                if (support.strictResume
+                  && sessionResult?.sessionId !== undefined && sessionResult.sessionId !== cursor) {
+                  throw new Error("ACP agent returned a different session ID");
+                }
                 sessionId = cursor;
-              } catch {
+              } catch (error) {
+                if (support.strictResume) {
+                  throw new Error(`Cannot resume ${support.displayName}; no new session was created: ${error instanceof Error ? error.message : String(error)}`);
+                }
                 /* session gone, load unsupported, or too slow — start fresh */
               }
             }
@@ -620,7 +677,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                 ...base(threadId, turnId),
                 type: "session.started",
                 sessionId,
-                model: selectedModel ?? init?._meta?.modelState?.currentModelId ?? cliTurn.model ?? null,
+                model: support.fixedModel ?? selectedModel ?? init?._meta?.modelState?.currentModelId ?? cliTurn.model ?? null,
               });
             };
 
@@ -721,6 +778,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
       };
 
       const snapshot = async (): Promise<ProviderSnapshot> => {
+        if (support.probeSnapshot) return support.probeSnapshot(childEnv(), config);
         const env = childEnv();
         const version = await new Promise<string | null>((resolve) => {
           execCli(config.cli, ["--version"], { timeout: 8000, env }, (err, stdout) =>
@@ -745,10 +803,13 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           provider: DRIVER_KIND,
           capabilities: {
             sessionModelSwitch: "unsupported",
-            agentsMcp: true,
-            computerMcp: true,
-            composioMcp: true,
+            agentsMcp: support.localIntegrations !== false,
+            computerMcp: support.localIntegrations !== false,
+            composioMcp: support.localIntegrations !== false,
             images: support.images !== false,
+            ...(support.files === false ? { files: false } : {}),
+            ...(support.fixedModel ? { customModels: false } : {}),
+            ...(support.permissionPolicy === "explicit-once" ? { explicitApprovals: true } : {}),
             effortLevels: support.effortLevels,
           },
           sendTurn,
@@ -757,10 +818,12 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             const turn = active.get(threadId);
             const finish = turn?.asks.get(requestId);
             if (!finish) return "unavailable"; // settled, timed out, or turn gone
-            finish(decision.behavior === "allow" ? "allow" : "deny", "user");
+            const outcome = finish(decision.behavior === "allow" ? "allow" : "deny", "user");
+            if (support.permissionPolicy === "explicit-once") return outcome;
             return decision.behavior === "allow" ? "allowed-once" : "rejected";
           },
           hasSession: (threadId) => active.has(threadId),
+          hasActiveTurns: () => active.size > 0 || pendingStarts.size > 0,
           stopAll: async () => {
             for (const { stop } of active.values()) stop();
           },
@@ -770,6 +833,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           },
         },
         dispose: async () => {
+          disposed = true;
           for (const { stop } of active.values()) stop();
           listeners.clear();
         },

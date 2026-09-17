@@ -459,6 +459,9 @@ export interface InstanceInfo {
     agentsMcp?: boolean;
     composioMcp?: boolean;
     images?: boolean;
+    files?: boolean;
+    customModels?: boolean;
+    explicitApprovals?: boolean;
     effortLevels?: readonly EffortLevel[];
     /** the engine keeps a live session and takes a message mid-turn */
     queueing?: boolean;

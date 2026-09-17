@@ -44,6 +44,9 @@ export interface ProviderDescription {
     agentsMcp: boolean;
     composioMcp?: boolean;
     images?: boolean;
+    files?: boolean;
+    customModels?: boolean;
+    explicitApprovals?: boolean;
     effortLevels?: readonly EffortLevel[];
     queueing?: boolean;
   };
@@ -176,6 +179,16 @@ export class ProviderRegistry {
     return [...this.byId.values()].flatMap((e) => (e.live ? [e.live] : []));
   }
 
+  /** Publish a prepared replacement without disposing unrelated providers. */
+  replacePrepared(instance: ProviderInstance, configs: InstanceConfigMap, cli: string): void {
+    this.byId.set(instance.instanceId, { instanceId: instance.instanceId, live: instance });
+    this.cliByInstance.set(instance.instanceId, cli);
+    this.generation += 1;
+    this.currentConfigHash = configHash(configs);
+    this.catalog = null;
+    this.refreshInFlight = null;
+  }
+
   /** Immediate startup shape. Cached health is explicitly stale; a first
    * install receives checking rows rather than a fabricated available state. */
   describeCached(): ProviderDescription[] {
@@ -207,6 +220,9 @@ export class ProviderRegistry {
           agentsMcp: instance?.adapter.capabilities.agentsMcp === true,
           composioMcp: instance?.adapter.capabilities.composioMcp === true,
           images: instance?.adapter.capabilities.images === true,
+          files: instance?.adapter.capabilities.files,
+          customModels: instance?.adapter.capabilities.customModels,
+          explicitApprovals: instance?.adapter.capabilities.explicitApprovals,
           effortLevels: instance?.adapter.capabilities.effortLevels,
           queueing: instance?.adapter.capabilities.queueing === true,
         },
@@ -294,6 +310,9 @@ export class ProviderRegistry {
             agentsMcp: inst.adapter.capabilities.agentsMcp === true,
             composioMcp: inst.adapter.capabilities.composioMcp === true,
             images: inst.adapter.capabilities.images === true,
+            files: inst.adapter.capabilities.files,
+            customModels: inst.adapter.capabilities.customModels,
+            explicitApprovals: inst.adapter.capabilities.explicitApprovals,
             effortLevels: inst.adapter.capabilities.effortLevels,
             queueing: inst.adapter.capabilities.queueing === true,
           },

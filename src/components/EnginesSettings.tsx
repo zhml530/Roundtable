@@ -10,6 +10,7 @@ import { Check, ChevronDown, Loader2, TriangleAlert } from "lucide-react";
 import { api, useStore, type InstanceInfo } from "@/state/store";
 import { EngineGroupLabel } from "./EngineGroupLabel";
 import { ProviderMark } from "./ProviderIcons";
+import { BugFlowInstall } from "./BugFlowInstall";
 import { splitEngineRail } from "@/lib/engine-rail";
 import { cn } from "@/lib/cn";
 
@@ -152,7 +153,10 @@ function CustomPicker({ instance, cliDefault, onClose, onSaved }: {
         </div>
       )}
       {probe?.ok && probe.version && (
-        <div className="text-[12px] text-success">Test passed — {probe.version}</div>
+        <div className="text-[12px] text-success">
+          {instance.driverKind === "bugflowAgent" ? "CLI found" : "Test passed"} — {probe.version}
+          {instance.driverKind === "bugflowAgent" && ". This does not confirm host readiness or authentication."}
+        </div>
       )}
       {error && <div role="alert" className="text-[12px] text-danger">{error}</div>}
       <div className="flex justify-end gap-2">
@@ -268,6 +272,7 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
         </button>
       </div>
       {error && <div role="alert" className="mt-1 text-[12px] text-danger">{error}</div>}
+      {open && instance.driverKind === "bugflowAgent" && <BugFlowInstall instance={instance} />}
       {open && (
         <CustomPicker
           instance={instance}

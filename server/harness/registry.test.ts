@@ -31,6 +31,26 @@ describe("ProviderRegistry", () => {
     expect(registry.get("a")).not.toBeNull();
   });
 
+  it("publishes a prepared CLI replacement without disposing sibling providers", async () => {
+    const fake = makeFakeDriver();
+    const registry = new ProviderRegistry([fake.driver]);
+    const configs = { a: { driver: "fake" }, b: { driver: "fake" } };
+    await registry.load(configs);
+    await registry.refresh();
+    const sibling = registry.get("b")!;
+    const disposeSibling = vi.spyOn(sibling, "dispose");
+    const replacement = await fake.driver.create({
+      instanceId: "a", displayName: "Replacement", enabled: true, environment: {}, config: {},
+    });
+    registry.replacePrepared(replacement, configs, "C:\\managed\\BugFlow.exe");
+    expect(registry.get("a")).toBe(replacement);
+    expect(registry.get("b")).toBe(sibling);
+    expect(disposeSibling).not.toHaveBeenCalled();
+    expect(registry.describeCached().find((entry) => entry.instanceId === "a")).toMatchObject({
+      displayName: "Replacement", cli: "C:\\managed\\BugFlow.exe", refreshing: true,
+    });
+  });
+
   it("reports cli as overridden only when the raw config sets it", async () => {
     // Regression: override detection used to read the DECODED config, whose
     // cli field is always filled in with the driver default — every instance
