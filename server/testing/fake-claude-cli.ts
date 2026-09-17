@@ -150,6 +150,46 @@ const playTurn = (prompt: JsonValue) => {
     return;
   }
 
+  if (process.env.FAKE_CLAUDE_CHANNEL_FIXTURE === "1" && promptText(prompt).includes("ADAPTIVE_CHANNEL_FIXTURE")) {
+    const finishDirect = (text: string) => {
+      out({ type: "assistant", message: { content: [{ type: "text", text }] } });
+      out({ type: "result", is_error: false, stop_reason: "end_turn", usage: { input_tokens: 10, output_tokens: 5 } });
+      turnRunning = false;
+      finishIfDone();
+    };
+    let text: string;
+    if (argv.some((arg) => arg.includes("Roundtable Coordinator Intelligence")) && promptText(prompt).startsWith("Planning after dispatch:")) {
+      const context = JSON.parse(promptText(prompt).split("\n\n").at(-1)!);
+      text = JSON.stringify({ action: "plan", tasks: [{ id: "remaining", title: "Resolve dependency",
+        description: "Resolve ADAPTIVE_CHANNEL_FIXTURE dependency using the saved evidence", botId: context.availableBots[0].id }] });
+    } else if (argv.some((arg) => arg.includes("Roundtable Coordinator Intelligence"))) {
+      const context = JSON.parse(promptText(prompt).split("<runtime_context>\n")[1]!.split("\n</runtime_context>")[0]!);
+      text = JSON.stringify({ action: "dispatch", botId: context.availableBots[0].id, title: "Bounded response",
+        description: "Respond to ADAPTIVE_CHANNEL_FIXTURE", state: "conversation", risk: "low", requiresReview: false });
+    } else if (argv.some((arg) => arg.includes("durable project-state checkpoint"))) {
+      text = "# Project\nState-bearing direct work completed.";
+    } else if (argv.some((arg) => arg.includes("system-owned replanning intelligence"))) {
+      text = '{"action":"complete","rationale":"Remaining work finished"}';
+    } else if (argv.some((arg) => arg.includes("response synthesizer"))) {
+      text = "Remaining work finished.";
+    } else {
+      if (promptText(prompt).includes("NEEDS_PLANNING") && promptText(prompt).includes("Direct assignment:")) {
+        const mcp = JSON.parse(readFileSync(argAfter("--mcp-config")!, "utf8"));
+        const socket = createConnection(mcp.mcpServers.ogb.args.at(-1));
+        socket.on("connect", () => socket.write(JSON.stringify({ t: "ask", id: "handoff-approval", kind: "permission", tool: "Read", input: { file_path: "existing-evidence.md" } }) + "\n"));
+        socket.once("data", () => { socket.end(); finishDirect("Existing evidence retained for planning."); });
+        socket.on("error", (error) => { process.stderr.write(String(error)); process.exit(1); });
+        return;
+      }
+      if (promptText(prompt).includes("STATE_BEARING")) {
+        out({ type: "assistant", message: { content: [{ type: "tool_use", id: "direct-tool", name: "Read" }] } });
+        out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "direct-tool", is_error: false }] } });
+      }
+      text = "Hello directly from the Channel agent.";
+    }
+    finishDirect(text);
+    return;
+  }
   if (process.env.FAKE_CLAUDE_CHANNEL_FIXTURE === "1" && promptText(prompt).includes("CHANNEL_SESSION_FIXTURE")) {
     const finishChannel = (text: string) => {
       out({ type: "assistant", message: { content: [{ type: "text", text }] } });

@@ -130,6 +130,8 @@ import { loadBundledSkills, loadUserSkills, mergeSkills, renderSkillInstructions
 import { installedPlaybookInstructions } from "./installed-playbooks.ts";
 import { createBotPackageExport } from "./package-export.ts";
 import { COORDINATOR_CHECKPOINT_PROMPT, COORDINATOR_DECISION_PROMPT, COORDINATOR_SYSTEM_PROMPT, COORDINATOR_SYNTHESIS_PROMPT, CoordinationManager } from "./coordination.ts";
+import { deliverCoordinationMessage } from "./coordination-delivery.ts";
+import { planningControlSchema } from "./coordination-routing.ts";
 import { loadChannelProjectState, writeChannelProjectState } from "./channel-project-state.ts";
 
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
@@ -1592,7 +1594,7 @@ async function startTurn(
         ? mentioned
         : [];
       const coordinationPrompt = coordinatorManaged
-        ? "Coordinator owns teammate scheduling for this task. Do not call ask_bot or delegate_bot; report any additional work needed in your result so it can be planned."
+        ? "Coordinator owns teammate scheduling for this task. Do not call ask_bot or delegate_bot. For a direct assignment, use request_planning with evidence and completed actions when dependencies, risk, or review require a plan; end the turn after acknowledgement. For planned assignments, report additional work needed in your result. Conversation text alone never requests planning."
         : integrations.agents && sectionPeers.length > 0 && (hasProfile || tagged.length > 0)
         ? "You can work with the other bots in your section through the agents tools — list_bots shows who's available, ask_bot sends one of them a message and returns their reply."
         : "";
@@ -1731,7 +1733,10 @@ coordination = new CoordinationManager({
     if (!group) return [];
     return group.memberIds.flatMap((botId) => {
       const bot = store.bot(botId);
-      return bot && !bot.hidden ? [{ id: bot.id, name: bot.name, title: bot.title, description: bot.description, model: bot.modelSelection.model }] : [];
+      return bot && !bot.hidden ? [{
+        id: bot.id, name: bot.name, title: bot.title, description: bot.description, model: bot.modelSelection.model,
+        supportsPlanningRequest: registry.get(bot.modelSelection.instanceId)?.adapter.capabilities.agentsMcp === true,
+      }] : [];
     });
   },
   createTask: (botId, title, groupId, adoptThreadId) => {
@@ -1742,6 +1747,8 @@ coordination = new CoordinationManager({
   },
   runBotTurn: ({ botId, threadId, prompt, signal }) => new Promise((resolve, reject) => {
     let text = "";
+    let usedTools = false;
+    let replyMessageId: string | undefined;
     let runtimeError: string | undefined;
     let settled = false;
     let stopError: Error | undefined;
@@ -1753,12 +1760,14 @@ coordination = new CoordinationManager({
       unsubscribe();
       signal.removeEventListener("abort", abort);
       if (error || stopError) reject(error ?? stopError);
-      else resolve({ text: text || "(the bot completed without a text response)", usage });
+      else resolve({ text, usage, usedTools, replyMessageId });
     };
     const unsubscribe = bus.subscribe((event: RuntimeEvent) => {
       if (event.threadId !== threadId) return;
+      if (["item.started", "item.updated", "item.completed"].includes(event.type) && "itemType" in event && event.itemType === "tool") usedTools = true;
       if (event.type === "item.completed" && event.itemType === "assistant_text") {
         text = event.text;
+        replyMessageId = lastReplyMessageId.get(threadId);
       } else if (event.type === "turn.completed") {
         finish(event.ok ? undefined : new Error(runtimeError || event.stopReason || "The bot turn failed"), event.usage);
       } else if (event.type === "runtime.error") {
@@ -1799,16 +1808,11 @@ coordination = new CoordinationManager({
     await registry.get(bot?.modelSelection.instanceId ?? "")?.adapter.interruptTurn(threadId);
   },
   appendChannelMessage: (groupId, text, run) => {
-    const group = store.conversation(groupId);
-    if (!group) return;
-    const delivery = {
-      executionReport: run?.report,
-      artifacts: run ? collectChannelArtifacts(run.tasks.flatMap((task) => {
+    const artifacts = run ? collectChannelArtifacts(run.tasks.flatMap((task) => {
         const cwd = task.threadId ? store.taskByThread(task.botId, task.threadId)?.cwd : undefined;
         return cwd && task.threadId ? [{ threadId: task.threadId, cwd, output: task.output ?? "" }] : [];
-      }), run.createdAt) : undefined,
-    };
-    store.appendMessage(group.threadId, { role: "bot", kind: "text", author: "coordinator", text, ...delivery });
+      }), run.createdAt) : undefined;
+    deliverCoordinationMessage(store, groupId, text, run, artifacts);
   },
   coordinatorPolicy: () => {
     const configured = coordinatorConfig(cfg);
@@ -1836,7 +1840,7 @@ coordination = new CoordinationManager({
       reject(new Error(`Coordinator engine ${selection.instanceId} is unavailable`));
       return;
     }
-    const threadId = `coordinator:${runId}:planning:${revision}:${randomUUID()}`;
+    const threadId = `coordinator:${runId}:${purpose ?? "planning"}:${revision}:${randomUUID()}`;
     let text = "";
     let settled = false;
     let runtimeError: string | undefined;
@@ -2735,6 +2739,22 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
     if (path.startsWith("/api/internal/")) {
       if (!authorizedComms(req.headers.authorization)) {
         return json(res, 401, { error: "unauthorized" });
+      }
+      if (method === "POST" && path === "/api/internal/request-planning") {
+        const parsed = planningControlSchema.safeParse(await readBody(req));
+        if (!parsed.success) return json(res, 400, { error: `Invalid planning request: ${parsed.error.issues[0]?.message}` });
+        const body = parsed.data;
+        const from = store.bot(body.fromBotId);
+        if (!from || from.hidden || !store.taskByThread(from.id, body.fromThreadId)) {
+          return json(res, 403, { error: "unknown planning sender or session" });
+        }
+        try {
+          if (!coordination) throw new Error("Coordinator is unavailable");
+          coordination.requestPlanning(body.runId, body.taskId, from.id, body.fromThreadId, body.request);
+          return json(res, 200, { accepted: true });
+        } catch (error) {
+          return json(res, 409, { error: error instanceof Error ? error.message : String(error) });
+        }
       }
       if (method === "GET" && path === "/api/internal/agents") {
         const self = url.searchParams.get("self");

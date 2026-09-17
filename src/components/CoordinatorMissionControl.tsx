@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Ban, ChevronDown, ChevronUp, CirclePause, CirclePlay, ExternalLink, GitBranch, Loader2, RotateCcw, Sparkles } from "lucide-react";
+import { Ban, ChevronDown, ChevronUp, CirclePause, CirclePlay, ExternalLink, GitBranch, Loader2, MessageSquare, RotateCcw, Sparkles } from "lucide-react";
 
 import { api, useStore, type CoordinationRun, type CoordinationTask, type Group } from "@/state/store";
 import { cn } from "@/lib/cn";
@@ -33,7 +33,8 @@ export function CoordinatorMissionControl({ group }: { group: Group }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const run = group.coordination;
-  const layout = useMemo(() => layoutCoordinationDag(run?.tasks.filter((task) => task.id !== "planning") ?? []), [run?.tasks]);
+  const layout = useMemo(() => layoutCoordinationDag(run?.executionMode === "direct" || run?.executionMode === "routing"
+    ? [] : run?.tasks.filter((task) => task.id !== "planning") ?? []), [run?.tasks, run?.executionMode]);
 
   const update = async (action: "pause" | "resume" | "cancel" | "retry") => {
     setBusy(action);
@@ -66,6 +67,8 @@ export function CoordinatorMissionControl({ group }: { group: Group }) {
   if (!run || run.status === "completed" || run.status === "cancelled") return null;
 
   const active = ["planning", "validating", "running", "paused", "reviewing"].includes(run.status);
+  const direct = run.executionMode === "direct";
+  const canRetry = !direct || run.tasks.some((task) => task.id === run.dispatch?.taskId && task.status === "completed");
   const needsInput = (task: CoordinationTask) => task.status === "running" && !!task.threadId
     && state.bots.some((bot) => bot.id === task.botId && bot.activity === "waiting-on-you");
   const waitingTasks = run.tasks.filter(needsInput);
@@ -78,20 +81,22 @@ export function CoordinatorMissionControl({ group }: { group: Group }) {
     ?? tasks.find((task) => task.status === "pending");
   const stateLabel = waitingTasks.length > 0
     ? "Waiting for you"
-    : pendingSteerings.length > 0
+    : run.status === "paused"
+      ? "Paused"
+      : run.status === "failed" || run.status === "planning_blocked"
+        ? "Needs attention"
+        : pendingSteerings.length > 0
       ? "Steering queued"
-      : run.status === "planning" || run.status === "validating"
-        ? "Planning"
-        : run.status === "reviewing"
-          ? "Preparing final answer"
-          : run.status === "paused"
-            ? "Paused"
-            : run.status === "failed" || run.status === "planning_blocked"
-              ? "Needs attention"
-              : "Running";
+      : direct && run.dispatch?.escalation
+        ? "Escalating to plan"
+        : run.status === "planning" || run.status === "validating"
+          ? run.executionMode === "routing" ? "Routing" : "Planning"
+          : direct
+            ? completedTasks ? run.dispatch?.state === "project" || run.dispatch?.usedTools ? "Saving context" : "Finishing delivery" : "Direct dispatch"
+            : run.status === "reviewing" ? "Preparing final answer" : "Running";
   const taskLabel = (task: CoordinationTask) => {
     if (needsInput(task)) return "Needs your input in Channel";
-    if (task.status === "pending") return "Waiting for dependencies";
+    if (task.status === "pending") return direct ? "Waiting to dispatch" : "Waiting for dependencies";
     if (task.status === "ready") return run.status === "paused" ? "Paused" : "Waiting for a slot";
     if (task.status === "running" && !task.threadId) return "Waiting for Bot / starting";
     return task.status;
@@ -102,12 +107,13 @@ export function CoordinatorMissionControl({ group }: { group: Group }) {
         <div className={cn("flex items-center gap-3 px-3 py-2.5", expanded && "border-b border-hairline/40")}>
           {run.status === "planning" || run.status === "validating" || run.status === "reviewing"
             ? <Sparkles size={15} className="shrink-0 text-accent" />
-            : <GitBranch size={15} className={cn("shrink-0", waitingTasks.length > 0 ? "text-amber-500" : run.status === "failed" || run.status === "planning_blocked" ? "text-danger" : "text-accent")} />}
-          <button className="min-w-0 flex-1 text-left" onClick={() => setExpanded((value) => !value)}>
-            <div className="flex min-w-0 items-center gap-2">
+            : direct ? <MessageSquare size={15} className="shrink-0 text-accent" />
+              : <GitBranch size={15} className={cn("shrink-0", waitingTasks.length > 0 ? "text-amber-500" : run.status === "failed" || run.status === "planning_blocked" ? "text-danger" : "text-accent")} />}
+          <button className="min-w-0 flex-1 text-left" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
+            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
               <span className="shrink-0 text-[12.5px] font-semibold text-ink">Coordinator</span>
               <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[10.5px] font-semibold", waitingTasks.length > 0 ? "bg-amber-500/15 text-amber-600 dark:text-amber-400" : run.status === "failed" || run.status === "planning_blocked" ? "bg-danger/15 text-danger" : "bg-accent/15 text-accent")}>{stateLabel}</span>
-              {!!tasks.length && <span className="shrink-0 text-[11.5px] tabular-nums text-ink-secondary">{completedTasks}/{tasks.length}</span>}
+              {!direct && !!tasks.length && <span className="shrink-0 text-[11.5px] tabular-nums text-ink-secondary">{completedTasks}/{tasks.length}</span>}
             </div>
             <div className="mt-0.5 truncate text-[12px] text-ink-secondary">
               {currentTask ? `${currentTask.botName} · ${currentTask.title}` : run.goal}
@@ -117,8 +123,8 @@ export function CoordinatorMissionControl({ group }: { group: Group }) {
           {active && run.status !== "paused" && run.status !== "reviewing" && <button title="Pause new task dispatch" onClick={() => void update("pause")} disabled={busy !== null} className="rounded-lg p-1.5 text-ink-secondary hover:bg-raised hover:text-ink"><CirclePause size={16} /></button>}
           {run.status === "paused" && <button title="Resume" onClick={() => void update("resume")} disabled={busy !== null} className="rounded-lg p-1.5 text-accent hover:bg-raised"><CirclePlay size={16} /></button>}
           {active && <button title="Cancel run" onClick={() => void update("cancel")} disabled={busy !== null} className="rounded-lg p-1.5 text-ink-secondary hover:bg-danger/10 hover:text-danger"><Ban size={16} /></button>}
-          {["planning_blocked", "failed", "cancelled"].includes(run.status) && <button title="Retry run" onClick={() => void update("retry")} disabled={busy !== null} className="rounded-lg p-1.5 text-ink-secondary hover:bg-raised hover:text-ink"><RotateCcw size={16} /></button>}
-          <button onClick={() => setExpanded((value) => !value)} className="rounded-lg p-1 text-ink-secondary hover:bg-raised">{expanded ? <ChevronUp size={15} /> : <ChevronDown size={15} />}</button>
+          {canRetry && ["planning_blocked", "failed", "cancelled"].includes(run.status) && <button title={direct ? "Retry finalization without rerunning the agent" : "Retry run"} onClick={() => void update("retry")} disabled={busy !== null} className="rounded-lg p-1.5 text-ink-secondary hover:bg-raised hover:text-ink"><RotateCcw size={16} /></button>}
+          <button aria-label={expanded ? "Hide execution details" : "Show execution details"} aria-expanded={expanded} onClick={() => setExpanded((value) => !value)} className="rounded-lg p-1 text-ink-secondary hover:bg-raised">{expanded ? <ChevronUp size={15} /> : <ChevronDown size={15} />}</button>
         </div>
 
         {expanded && <>
@@ -133,7 +139,14 @@ export function CoordinatorMissionControl({ group }: { group: Group }) {
             Steering is persisted and will be applied at the next safe plan boundary: “{pendingSteerings.at(-1)?.text}”
           </div>}
           <div className="max-h-[35vh] overflow-auto bg-inset/40">
-            {(run.status === "planning" || run.status === "validating") && layout.nodes.length === 0 ? <div className="flex items-center justify-center gap-2 py-10 text-[13px] text-ink-secondary"><Loader2 size={15} className="animate-spin" /> Coordinator is {run.status === "validating" ? "validating the plan" : "planning the work"}…</div> : layout.nodes.length === 0 ? <div className="px-4 py-8 text-center text-[13px] text-ink-secondary">No executable task plan is available.</div> :
+            {direct ? <div className="px-3 py-3">
+              {tasks.map((task) => <button key={task.id} type="button" disabled={!task.threadId} onClick={() => void openTask(task)} className="flex w-full items-start gap-2 text-left disabled:cursor-default" aria-label={`Open ${task.botName} assignment`}>
+                <span className={cn("mt-1.5 size-2 shrink-0 rounded-full", STATUS_DOT[task.status])} />
+                <span className="min-w-0 flex-1"><span className="block text-[12px] font-medium text-ink">{task.botName} · {task.title}</span><span className="block text-[11px] text-ink-secondary">{taskLabel(task)}</span></span>
+                {task.threadId && <ExternalLink size={13} className="mt-1 shrink-0 text-ink-secondary" />}
+              </button>)}
+              {run.dispatch?.escalation && <p className="mt-2 text-[12px] text-ink-secondary">{run.dispatch.escalation.reason}</p>}
+            </div> : (run.status === "planning" || run.status === "validating") && layout.nodes.length === 0 ? <div className="flex items-center justify-center gap-2 py-10 text-[13px] text-ink-secondary"><Loader2 size={15} className="animate-spin" /> Coordinator is {run.executionMode === "routing" ? "choosing direct dispatch or a plan" : run.status === "validating" ? "validating the plan" : "planning the work"}…</div> : layout.nodes.length === 0 ? <div className="px-4 py-8 text-center text-[13px] text-ink-secondary">No executable task plan is available.</div> :
             <div className="relative" style={{ width: layout.width, height: layout.height }}>
               <svg className="pointer-events-none absolute inset-0" width={layout.width} height={layout.height} aria-hidden="true">
                 <defs><marker id={`dag-arrow-${run.id}`} markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" className="fill-ink-secondary/40" /></marker></defs>
@@ -152,9 +165,10 @@ export function CoordinatorMissionControl({ group }: { group: Group }) {
               </button>)}
             </div>}
           </div>
-          <div className="flex items-center justify-between gap-3 px-3 py-2 text-[11px] text-ink-secondary"><span>{completedTasks}/{tasks.length} tasks complete{run.recovery ? " · recovered after restart" : ""}</span><span className="truncate">{run.events.at(-1)?.message}</span></div>
+          <div className="flex items-center justify-between gap-3 px-3 py-2 text-[11px] text-ink-secondary"><span>{direct ? "Direct assignment" : `${completedTasks}/${tasks.length} tasks complete`}{run.recovery ? " · recovered after restart" : ""}</span><span className="truncate">{run.events.at(-1)?.message}</span></div>
         </>}
         {(error || run.error) && <div className="border-t border-danger/20 bg-danger/10 px-3 py-2 text-[12px] text-danger">{error ?? run.error}</div>}
+        {direct && !canRetry && run.status === "failed" && <p className="border-t border-hairline/40 px-3 py-2 text-[12px] text-ink-secondary">Inspect the agent session and external state before sending a new request for the remaining work.</p>}
       </div>
     </section>
   );

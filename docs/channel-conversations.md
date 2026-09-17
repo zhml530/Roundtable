@@ -2,7 +2,7 @@
 
 Channels contain Topics, coordinated by the system Coordinator. Each `(Topic, Bot)` pair
 owns a persistent provider session, separate from the Bot's direct chat and its
-sessions in other Topics or Channels. DAG tasks are assignments within that session, not
+sessions in other Topics or Channels. Direct and DAG tasks are assignments within that session, not
 new conversations. Up to two independent tasks run concurrently; turns belonging
 to the same Bot remain serialized, including across Topics.
 
@@ -53,6 +53,40 @@ automatic final review task. The `reviewer` task role denotes an explicit verdic
 gate, and high-risk review policy remains enforced. Legacy role-only proposals
 require a matching Channel profile; unknown specializations must supply a Bot ID.
 
+## Adaptive dispatch or planning
+
+The first Coordinator call returns one validated outcome, not a classification
+followed by another planning call:
+
+- `dispatch`: one concrete available Bot, a bounded task, low risk, no required
+  review or dependencies, and a `conversation` or `project` state policy.
+- `plan`: the complete remaining-work DAG. Legacy bare task arrays remain
+  accepted as plans; persisted runs without `executionMode` retain DAG behavior.
+
+A direct assignment may produce analysis, code, documents, or other bounded work.
+Request length and roster size do not determine complexity. Explicit Bot mentions
+remain binding; multiple requested Bots, high-risk work, required reviews, and
+uncertain/dependent work require a plan. A direct Bot must support the existing
+Agents MCP control channel. All normal permissions and approvals still apply.
+
+Direct execution uses the same session and worker harness but bypasses OMA DAG
+scheduling, routine result evaluation, and synthesis. The worker's final message
+is the answer. Empty output and worker errors fail explicitly. Pure conversation
+does not rewrite the project checkpoint. State-bearing assignments, including
+observed tool use, checkpoint their durable context without a synthesis call.
+
+If the worker discovers that planning is necessary, it calls `request_planning`
+with the active run/task IDs, reason, evidence, completed actions, and remaining
+work, then ends its turn. The authenticated internal endpoint validates the
+worker/session/assignment and persists the handoff before acknowledging it.
+Ordinary user messages, quoted JSON, and tool output are never parsed as control.
+The remaining-work plan carries the evidence and no-repeat instructions, preserves
+the completed receipt, enforces review policy, and rejects exact repetitions of
+completed task IDs, titles, descriptions, or declared actions. These checks do not
+prove semantic equivalence between differently worded actions; workers must inspect
+actual state before acting. Steering also transitions direct work to a plan at a
+safe boundary, rather than mutating the in-flight worker.
+
 ```mermaid
 flowchart TD
     User --> Channel
@@ -80,13 +114,15 @@ flowchart TD
 - Planning, synthesis, result-driven replanning, and every Worker assignment
   receive the latest bounded project checkpoint in addition to recent Channel
   conversation.
-- After a Run produces its final answer, Coordinator Intelligence merges the
+- After a planned or state-bearing direct Run produces its final answer, Coordinator Intelligence merges the
   previous checkpoint with the latest goal, Steering, task results, artifacts,
   verification, and unresolved issues. Runtime atomically replaces the file.
 - The checkpoint is capped at 32 KiB and is always presented as untrusted
   evidence, never as system instructions or execution authority.
 - Checkpoint failure does not discard the completed Run or overwrite the last
-  good state. The failure is retained in Run events and metadata.
+  good state for planned runs. A state-bearing direct run instead reports failure
+  with its completed worker receipt intact, so missing durable context is not
+  presented as success. The failure is retained in Run events and metadata.
 - Full messages and execution receipts remain the audit log. `PROJECT_STATE.md`
   is the compact continuation context, not a replacement for that history.
 
@@ -107,7 +143,8 @@ flowchart TD
   dispatch. Planning also receives recent results from that Channel, including
   legacy runs whose worker messages were not shown in the Channel.
 - Restart retains session cursors but retires pending provider approval cards.
-  Interrupted runs require retry. Removing a member or deleting a Channel cancels
+  Interrupted direct assignments with unknown outcomes require inspection and an
+  explicit retry; they are never automatically replayed. Removing a member or deleting a Channel cancels
   its active run before detaching sessions. The old task records remain available.
 
 ## Approval policy
@@ -120,8 +157,10 @@ request; answer that card explicitly.
 
 ## Final delivery
 
-Single-task answers appear once, under the Bot that answered. Multi-task runs
-use the system Coordinator model to reconcile final Bot outputs, including fixes
+Direct answers appear once, under the Bot that answered. The exact projected
+source message receives its execution report and stable `coordinationRunId`,
+making finalization idempotent across restart. System-owned failure receipts are
+also keyed by Run ID. Planned runs use the system Coordinator model to reconcile final Bot outputs, including fixes
 and reviews. Intermediate narration is visible as Bot conversation but excluded
 from the final output collected for synthesis.
 
@@ -148,7 +187,17 @@ message is persisted against the Run and applied through the same typed,
 Runtime-validated revision path; it is never injected into a worker mid-turn.
 Application restart reattaches the persisted Run, preserves completed receipts,
 rebuilds remaining dependencies, and continues interrupted work on the same
-per-Channel Bot session. A paused Run remains paused across restart.
+per-Topic Bot session for planned runs. A completed direct receipt can finalize or
+continue its persisted planning handoff without repeating its worker; an
+interrupted or failed direct worker is not replayed automatically. A paused Run
+remains paused across restart.
+
+**Retry finalization** reuses a completed direct receipt to retry only its
+checkpoint, delivery, or persisted handoff, not the worker. An uncertain direct
+failure cannot use the generic Retry path: inspect its session and external state,
+then send a new request describing verified remaining work. Delivery preserves
+the already-redacted worker message and scrubs report/system-notice text before
+patching it; finalization never restores raw secrets from the worker result.
 
 If synthesis fails, the Channel explicitly says a consolidated summary is
 unavailable and points to the Bot findings, while preserving the error in the
@@ -166,3 +215,7 @@ and verifies artifact access remains conversation-local. Navigation tests cover
 the shared creation action, Channel grouping, selection, errors, and worker-session
 filtering. Coordinator tests cover scope, fix limits, and separate execution/review
 outcomes.
+Adaptive tests additionally cover the exact one-routing/one-worker greeting path,
+state-bearing checkpoints, structured escalation, steering/cancellation races,
+fail-closed direct recovery, idempotent delivery, and direct/routing UI labels.
+These checks establish behavior and model-turn counts, not production latency.

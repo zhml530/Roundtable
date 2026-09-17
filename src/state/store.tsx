@@ -73,6 +73,7 @@ export interface Message {
   author?: "coordinator";
   source?: { threadId: string; messageId: string };
   executionReport?: string;
+  coordinationRunId?: string;
   artifacts?: Array<{ label: string; path: string; threadId: string }>;
   id: string;
   /** Provider turn that produced this runtime projection. */
@@ -127,6 +128,7 @@ export type CoordinationRunStatus = "planning" | "validating" | "planning_blocke
 export type CoordinationTaskStatus = "pending" | "ready" | "running" | "completed" | "failed" | "blocked" | "cancelled";
 
 export interface CoordinationTask {
+  replyMessageId?: string;
   id: string;
   title: string;
   description: string;
@@ -150,6 +152,13 @@ export interface CoordinationTask {
 }
 
 export interface CoordinationRun {
+  executionMode?: "routing" | "direct" | "planned";
+  dispatch?: {
+    taskId: string;
+    state: "conversation" | "project";
+    usedTools?: boolean;
+    escalation?: { reason: string; evidence: string; completedActions: string[]; remainingWork: string };
+  };
   answer?: string;
   reviewStatus?: "not_required" | "approved" | "changes_requested" | "unresolved";
   steerings?: Array<{

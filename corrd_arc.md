@@ -9,6 +9,7 @@ flowchart TD
     U[User goal] --> CI[Roundtable Coordinator Intelligence]
     CI -->|JSON proposal| CM[Roundtable CoordinationManager]
     CM -->|Validated PlanArtifact| OMA[OpenMultiAgent scheduler]
+    CM -->|Validated direct dispatch| RH
     OMA -->|LLMAdapter callback| CM
     CM --> RH[Roundtable agent harness]
     RH --> B[Provider-backed Bot]
@@ -20,7 +21,8 @@ flowchart TD
 ### Roundtable Responsibilities
 
 - Build the planning context from the goal, Channel conversation, project state, previous runs, Bot roster, and runtime policy.
-- Invoke the Coordinator model for planning, result evaluation, synthesis, and project-state checkpoints.
+- Invoke the Coordinator once for dispatch-or-plan, then use result evaluation,
+  synthesis, and project-state checkpoints only on paths that require them.
 - Parse, normalize, and validate model-generated plans before execution.
 - Bind plan tasks to real Channel Bots.
 - Own `CoordinationRun` and `CoordinationTask` state, revisions, steering, review policy, recovery, persistence, and reports.
@@ -42,7 +44,8 @@ OMA does not generate the Roundtable DAG, select Channel Bots, manage provider s
 
 1. A user message in a non-DM Channel starts a `CoordinationRun` when no run is active.
 2. Roundtable invokes the configured Coordinator model with `COORDINATOR_SYSTEM_PROMPT`.
-3. The model returns a JSON task proposal containing titles, descriptions, roles, Bot IDs, and dependencies.
+3. The model returns either a validated `dispatch` (one bounded low-risk Bot
+   assignment) or `plan` containing a complete DAG. There is no separate classifier call.
 4. Roundtable parses the proposal into OMA's `PlanArtifact` shape.
 5. Runtime validation checks task count, unique IDs, required fields, known dependencies, self-dependencies, and cycles.
 6. Roundtable binds every task to an available Channel Bot and ensures explicitly mentioned Bots participate.
@@ -50,6 +53,14 @@ OMA does not generate the Roundtable DAG, select Channel Bots, manage provider s
 8. Each OMA worker uses `RoundtableAdapter`, which calls `CoordinationManager.invokeTask` and then Roundtable's `runBotTurn`/`startTurn` path.
 9. Roundtable evaluates results and chooses `complete`, `replan`, or `blocked`.
 10. Completed results are synthesized into the final Channel response and a durable project-state checkpoint.
+
+Steps 4–10 describe the planned path. Direct dispatch instead calls `invokeTask`
+through the same worker harness, persists its receipt, and uses the Bot's final
+message without OMA scheduling, result evaluation, or synthesis. Pure conversation
+skips checkpointing; project work and observed tool use update durable context.
+An authenticated `request_planning` control call or pending user Steering can
+transition direct work to a validated remaining-work plan with completed-action
+evidence. Neither user/tool prose nor response JSON is interpreted as that control.
 
 The central execution boundary is:
 
@@ -63,7 +74,7 @@ orchestrator.runFromPlan(team, plan, { abortSignal: signal });
 
 ### Coordinator Model Sessions
 
-Planning, decision, synthesis, and checkpoint calls use independent temporary Roundtable thread IDs:
+Routing, planning, decision, synthesis, and checkpoint calls use independent temporary Roundtable thread IDs:
 
 ```text
 coordinator:<runId>:<purpose>:<revision>:<uuid>
@@ -101,10 +112,13 @@ Messages sent while a run is active become steering requests. They are persisted
 Roundtable persists recent runs to `coordination-runs.json`. After a process restart:
 
 - Completed task receipts remain completed.
-- Tasks that were running become ready again.
+- Planned tasks that were running become ready again. Interrupted direct workers
+  fail closed for inspection instead of replaying potentially irreversible actions.
 - Existing task `threadId` values are retained.
 - Recovery metadata and an idempotency warning are added to interrupted tasks.
 - Execution resumes only after providers, stale approvals, and queued handoffs have been reconciled.
+- Completed direct receipts finalize without another worker turn. Final delivery
+  enriches the exact projected worker message and is idempotent by Run ID.
 
 Provider processes themselves do not survive the restart. Session continuation is reconstructed through Roundtable's stored task/session bookkeeping and the provider adapter's normal resume mechanism.
 

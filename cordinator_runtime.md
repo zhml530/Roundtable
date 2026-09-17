@@ -8,7 +8,7 @@
 Roundtable 的 Coordinator 必须拆成两个边界清晰的部分：
 
 - **Coordinator Runtime**：确定性的系统控制面，拥有 Run、DAG、调度、审批和状态变更的最终权威。
-- **Coordinator Intelligence**：独立的 LLM 决策层，只负责提出 Plan、Replan、分配和总结建议。
+- **Coordinator Intelligence**：独立的 LLM 决策层，首次调用直接提出 Dispatch 或完整 Plan，后续按需提出 Replan 和总结建议。
 
 Coordinator Intelligence 不复用某个现有 Bot，也不建设第二套 Provider。它使用独立的模型配置、Prompt、Session 和权限边界，同时复用 Roundtable 已有的 Provider Registry、ACP、认证、模型目录、流式事件、Usage 和 Interrupt 能力。
 
@@ -36,6 +36,10 @@ flowchart TB
     PROVIDERS --> PROPOSAL[Structured Decision Proposal]
     PROPOSAL --> VALIDATOR[Schema / DAG / Policy Validator]
     VALIDATOR --> CORE
+    CORE --> DIRECT[Bounded direct Bot assignment]
+    DIRECT --> ANSWER[Worker final answer]
+    DIRECT --> HANDOFF[Authenticated request_planning]
+    HANDOFF --> INTEL
 
     CORE --> SCHEDULER[Deterministic Scheduler]
     SCHEDULER --> TASKS[Detached Bot Tasks]
@@ -75,8 +79,8 @@ Runtime 是唯一可以改变协调状态的组件，负责：
 
 Coordinator Intelligence 是 Runtime 的无工具推理依赖，负责：
 
-- 判断 Goal 是单任务还是多任务。
-- 生成最小且足够安全的 DAG 建议。
+- 在一次调用内返回经过判别的 `dispatch` 或 `plan`，不增加独立分类调用。
+- 对单个、低风险、无依赖和强制 review 的交付直接指定可用 Bot；其余返回完整 DAG。
 - 根据 Bot 能力摘要提出任务分配。
 - 解释 Mention 和用户约束。
 - 在任务失败、Reviewer 否决或用户 Steering 后提出 Replan。
@@ -93,6 +97,16 @@ Coordinator Intelligence 不拥有：
 - Reviewer 的独立验证权。
 
 Architect、Developer、Tester 和 Reviewer 都是执行角色。Architect 可以成为 DAG 中的任务承担者，但不再默认充当 Coordinator Planner。
+
+Direct 路径不限于问候或只读任务，也可以完成有界的代码、文档等交付；不能仅根据文本
+长度或 Channel 人数判断复杂度。显式 Bot 选择、多人协作、风险和 review 约束由 Runtime
+验证。Direct 复用 worker harness、审批、取消和 Topic session，但不调用 DAG scheduler、
+常规结果评价或 synthesis；最终对话答案由 Bot 给出。
+
+Worker 只有通过已有 Agents MCP 的 `request_planning` 才能升级：提交 run/task ID、
+原因、证据、已完成动作和剩余工作。内部认证接口校验当前 Bot/thread/assignment，
+先持久化再确认；聊天文本和工具结果中的 JSON 不具有控制权。升级计划保留旧 receipt，
+携带禁止重做的证据，并恢复 DAG 的 review/replan/checkpoint 机制。
 
 ## 5. Provider 与 Session 边界
 
@@ -133,7 +147,7 @@ interface CoordinatorModelPolicy {
   primary: ModelSelection;
   fallbacks: ModelSelection[];
   routes?: {
-    triage?: ModelSelection;
+    routing?: ModelSelection;
     planning?: ModelSelection;
     replanning?: ModelSelection;
     synthesis?: ModelSelection;
@@ -142,7 +156,7 @@ interface CoordinatorModelPolicy {
 }
 ```
 
-第一版只需要配置 Primary、一个可选 Backup 和 Reasoning Effort。内部结构保留按操作路由的能力，未来可以让小模型处理复杂度判断、强模型处理复杂规划、低成本模型处理普通总结。
+第一版只需要配置 Primary、一个可选 Backup 和 Reasoning Effort。内部可保留按操作路由的能力，但首次 dispatch-or-plan 必须在同一模型调用中完成，不能拆成分类再规划。
 
 模型路由必须由显式 Policy 决定，不能静默借用 Channel Bot。
 
@@ -217,14 +231,19 @@ Runtime 不应把完整 Channel transcript、Bot 输出或系统内部对象直�
 
 当前实现还会读取 Runtime 自己维护的
 `~/.Roundtable/channel-projects/<channel-id>/PROJECT_STATE.md`。每个 Run 的最终答案
-产生后，Coordinator 以旧 checkpoint 和本轮持久化证据生成新 checkpoint；Runtime
+产生后（纯对话 direct 除外），Coordinator 以旧 checkpoint 和本轮持久化证据生成新 checkpoint；Runtime
 执行 32 KiB 上限校验并原子替换文件。完整 transcript/receipts 仍是审计真相，摘要只
 负责跨长会话恢复“当前项目状态”。
 
 ```mermaid
 stateDiagram-v2
     [*] --> LoadCheckpoint: start Channel Run
-    LoadCheckpoint --> Plan
+    LoadCheckpoint --> Routing
+    Routing --> Direct: bounded low risk
+    Routing --> Plan: dependencies / risk / review
+    Direct --> Persisted: conversation receipt, no checkpoint
+    Direct --> UpdateCheckpoint: state-bearing work
+    Direct --> Plan: structured handoff / steering
     Plan --> Execute
     Execute --> Replan: failed, rejected, or steered
     Replan --> Execute
@@ -272,6 +291,15 @@ stateDiagram-v2
 ```
 
 状态变更由 Runtime 执行并持久化。LLM 只能返回建议动作，例如 `create_plan`、`revise_plan` 或 `synthesize_report`。
+
+当前兼容字段 `executionMode` 区分 `routing`、`direct` 和 `planned`，不要求迁移旧 Run
+状态。UI 显示真实 routing、direct assignment 和 escalation，不把 direct receipt 画成
+DAG。旧数组 proposal 和未携带 executionMode 的持久化记录仍按 DAG 处理。
+
+Direct 恢复采取保守策略：已完成 receipt 可继续交付或升级规划，未知结果的中断/失败
+worker 不自动重放。最终消息通过原始 message ID 和 Run ID 幂等附加 execution report，
+不额外生成 Coordinator 回复。状态型 direct 的 checkpoint 失败会保留已完成证据并明确
+报告 Run 失败；纯对话只持久化会话和 receipt，不改写项目状态。
 
 Replan 使用追加式 revision，不覆盖已完成任务和 receipt。Reviewer 否决时，Intelligence
 根据具体 finding 选择实际 Channel Bot，Runtime 要求修订以一个终态 Reviewer 结束；任务

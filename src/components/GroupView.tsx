@@ -54,8 +54,8 @@ function dayLabel(at: number): string {
 }
 
 /** Older persisted Coordinator deliveries predate the explicit author field. */
-function isCoordinatorMessage(message: Message | undefined): boolean {
-  return message?.author === "coordinator" || Boolean(message?.executionReport);
+export function isCoordinatorMessage(message: Message | undefined): boolean {
+  return message?.author === "coordinator" || Boolean(message?.executionReport && !message.from);
 }
 
 /** 32px avatar + name, shown once per sender cluster. */

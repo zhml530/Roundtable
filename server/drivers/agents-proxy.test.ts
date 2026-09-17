@@ -8,6 +8,7 @@ import { createServer, type Server } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { planningControlSchema } from "../coordination-routing.ts";
 
 const PROXY = join(dirname(fileURLToPath(import.meta.url)), "agents-proxy.ts");
 const TOKEN = "test-comms-token";
@@ -21,6 +22,7 @@ let askResponse: unknown = { botName: "Helper", text: "hi from helper" };
 let lastDelegateBody: any = null;
 let delegateResponse: unknown = { queued: true, message: "Delegation queued." };
 let lastCredentialBody: any = null;
+let lastPlanningBody: ReturnType<typeof planningControlSchema.parse> | null = null;
 
 let child: ChildProcess;
 const pending = new Map<number, (msg: any) => void>();
@@ -83,6 +85,16 @@ beforeAll(async () => {
       });
       return;
     }
+    if (req.method === "POST" && req.url === "/api/internal/request-planning") {
+      let data = "";
+      req.on("data", (chunk) => (data += chunk));
+      req.on("end", () => {
+        lastPlanningBody = planningControlSchema.parse(JSON.parse(data));
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ accepted: true }));
+      });
+      return;
+    }
     res.writeHead(404, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: "unknown" }));
   });
@@ -121,7 +133,7 @@ afterAll(async () => {
 });
 
 describe("agents-proxy MCP surface", () => {
-  it("answers the MCP handshake and lists all four tools", async () => {
+  it("answers the MCP handshake and lists all tools", async () => {
     const init = await rpc("initialize", { protocolVersion: "2024-11-05" });
     expect(init.result.serverInfo.name).toContain("agents");
     const list = await rpc("tools/list");
@@ -130,7 +142,30 @@ describe("agents-proxy MCP surface", () => {
       "ask_bot",
       "delegate_bot",
       "request_credential",
+      "request_planning",
     ]);
+  });
+
+  it("binds structured planning requests to the harness sender, never caller-supplied identity", async () => {
+    const res = await callTool("request_planning", {
+      run_id: "run-1", task_id: "direct", reason: "Requires multiple specialties",
+      evidence: "Inspected existing design", completed_actions: ["Read design"], remaining_work: "Compare two options",
+      fromBotId: "spoofed", fromThreadId: "spoofed-thread",
+    });
+    expect(res.result.isError).toBeFalsy();
+    expect(res.result.content[0].text).toContain("End this turn");
+    expect(lastPlanningBody).toEqual({
+      fromBotId: "bot-asker", fromThreadId: "thread-asker-routine", runId: "run-1", taskId: "direct",
+      request: { reason: "Requires multiple specialties", evidence: "Inspected existing design",
+        completedActions: ["Read design"], remainingWork: "Compare two options" },
+    });
+  });
+
+  it("rejects malformed planning requests locally", async () => {
+    lastPlanningBody = null;
+    const res = await callTool("request_planning", { run_id: "run-1", task_id: "direct", reason: "Incomplete" });
+    expect(res.result.isError).toBe(true);
+    expect(lastPlanningBody).toBeNull();
   });
 
   it("list_bots renders the roster and authenticates with the shared token", async () => {

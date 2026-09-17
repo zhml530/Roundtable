@@ -1609,6 +1609,87 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("delivers one attributed direct reply and checkpoints observed tool use without synthesis", async () => {
+    const bot = (await api("POST", "/api/bots", {})).body.bot;
+    await api("PATCH", `/api/bots/${bot.id}`, { name: "Direct Atlas", autoApprove: true, modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } });
+    const room = (await api("POST", "/api/groups", { name: "Adaptive fixture", memberIds: [bot.id] })).body.group;
+    try {
+      await api("PATCH", `/api/groups/${room.id}/setup`, { action: "skip" });
+      const channel = async () => (await api("GET", "/api/bots")).body.groups.find((group: any) => group.id === room.id);
+      await api("POST", `/api/groups/${room.id}/messages`, { text: "ADAPTIVE_CHANNEL_FIXTURE hello" });
+      await expect.poll(async () => (await channel()).coordination?.status, { timeout: 15_000 }).toBe("completed");
+      const first = await channel();
+      const replies = first.messages.filter((message: any) => message.text === "Hello directly from the Channel agent.");
+      expect(replies).toHaveLength(1);
+      expect(replies[0]).toMatchObject({ from: { botId: bot.id }, coordinationRunId: first.coordination.id });
+      expect(replies[0].author).toBeUndefined();
+      expect(replies[0].executionReport).toBeTruthy();
+      expect(first.coordination).toMatchObject({ executionMode: "direct", dispatch: { usedTools: false } });
+      expect(first.coordination.planRevisions).toHaveLength(1);
+      const checkpoint = join(home, ".Roundtable", "channel-projects", room.id, "PROJECT_STATE.md");
+      expect(existsSync(checkpoint)).toBe(false);
+      await api("POST", `/api/groups/${room.id}/messages`, { text: "ADAPTIVE_CHANNEL_FIXTURE STATE_BEARING read one file" });
+      await expect.poll(async () => (await channel()).coordination?.status, { timeout: 15_000 }).toBe("completed");
+      const second = await channel();
+      expect(second.memberSessions).toEqual(first.memberSessions);
+      expect(second.coordination).toMatchObject({ executionMode: "direct", dispatch: { usedTools: true } });
+      expect(second.messages.filter((message: any) => message.text === "Hello directly from the Channel agent.")).toHaveLength(2);
+      expect(readFileSync(checkpoint, "utf8")).toContain("State-bearing direct work completed");
+      expect(second.coordination.events.some((event: any) => /Preparing the Channel answer|evaluating completed/.test(event.message))).toBe(false);
+      expect((await api("POST", "/api/internal/request-planning", { runId: second.coordination.id, taskId: "direct" })).status).toBe(401);
+    } finally {
+      await settleCoordination(room.id);
+      await api("DELETE", `/api/groups/${room.id}`);
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  }, 35_000);
+
+  it("scopes authenticated planning handoffs to the active direct worker and preserves its approval", async () => {
+    const bot = (await api("POST", "/api/bots", {})).body.bot;
+    await api("PATCH", `/api/bots/${bot.id}`, { name: "Handoff Atlas", autoApprove: false, modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } });
+    const room = (await api("POST", "/api/groups", { name: "Handoff fixture", memberIds: [bot.id] })).body.group;
+    try {
+      await api("PATCH", `/api/groups/${room.id}/setup`, { action: "skip" });
+      const channel = async () => (await api("GET", "/api/bots")).body.groups.find((group: any) => group.id === room.id);
+      await api("POST", `/api/groups/${room.id}/messages`, { text: "ADAPTIVE_CHANNEL_FIXTURE NEEDS_PLANNING prepare a draft" });
+      await expect.poll(async () => (await channel()).messages.some((message: any) => message.card?.requestId && !message.card.answered), { timeout: 15_000 }).toBe(true);
+      const active = await channel();
+      const approval = active.messages.find((message: any) => message.card?.requestId && !message.card.answered);
+      const dump = JSON.parse(readFileSync(fakeClaudeDump, "utf8"));
+      expect(dump.argv.join(" ")).toContain("direct assignment, use request_planning");
+      const env = dump.mcpConfig.mcpServers.agents.env;
+      const control = {
+        fromBotId: bot.id, fromThreadId: env.OMB_THREAD_ID, runId: active.coordination.id, taskId: "direct",
+        request: { reason: "Need an additional dependency", evidence: "Inspected existing draft",
+          completedActions: ["Inspected draft"], remainingWork: "Resolve dependency" },
+      };
+      const sendControl = async (body: typeof control) => fetch(`${BASE}/api/internal/request-planning`, {
+        method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${env.OMB_COMMS_TOKEN}` },
+        body: JSON.stringify(body),
+      });
+      expect((await sendControl({ ...control, fromThreadId: bot.threadId })).status).toBe(409);
+      expect((await sendControl({ ...control, taskId: "another-task" })).status).toBe(409);
+      expect((await sendControl(control)).status).toBe(200);
+      const accepted = await channel();
+      expect(accepted.coordination.dispatch.escalation).toEqual(control.request);
+      expect(accepted.coordination.status).toBe("running");
+      expect(accepted.messages.find((message: any) => message.id === approval.id).card.answered).toBeUndefined();
+      expect((await api("POST", `/api/threads/${room.threadId}/respond`, {
+        requestId: approval.card.requestId, sourceThreadId: approval.source.threadId, behavior: "allow",
+      })).status).toBe(200);
+      await expect.poll(async () => (await channel()).coordination?.status, { timeout: 15_000 }).toBe("completed");
+      const finished = await channel();
+      expect(finished.coordination.executionMode).toBe("planned");
+      expect(finished.coordination.tasks).toHaveLength(2);
+      expect(finished.coordination.tasks[0]).toMatchObject({ id: "direct", status: "completed" });
+      expect((await sendControl(control)).status).toBe(409);
+    } finally {
+      await settleCoordination(room.id);
+      await api("DELETE", `/api/groups/${room.id}`);
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  }, 35_000);
+
   it("delivers concurrent Channel replies, routes approvals by session, and reuses sessions on follow-up", async () => {
     const botIds: string[] = [];
     let room: any;

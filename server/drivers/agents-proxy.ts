@@ -1,5 +1,5 @@
 // Agent-to-agent comms MCP proxy — spawned as an MCP server inside a bot's
-// agent process (via the "agents" integration). Exposes four tools that
+// agent process (via the "agents" integration). Exposes tools that
 // let one bot talk to another, routed back through the harness so the
 // harness stays the single owner of turns, permissions, and recursion
 // limits:
@@ -23,6 +23,7 @@ import readline from "node:readline";
 import { localRpcJson } from "../local-rpc.ts";
 
 import { CREDENTIAL_TARGETS, isCredentialTargetId } from "../../shared/credential-request.ts";
+import { planningControlSchema } from "../coordination-routing.ts";
 
 const HARNESS_PIPE = process.env.OMB_HARNESS_PIPE ?? "";
 const HARNESS_URL = process.env.OMB_HARNESS_URL ?? "";
@@ -85,6 +86,22 @@ const TOOLS = [
       required: ["credential_id"],
     },
   },
+  {
+    name: "request_planning",
+    description: "Hand an active direct Channel assignment back for planning when it needs dependencies, review, or higher-risk work. Include evidence and every completed action so they are not repeated. Only the currently assigned worker may call this. After acknowledgement, end this turn without doing remaining work.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        run_id: { type: "string" },
+        task_id: { type: "string" },
+        reason: { type: "string" },
+        evidence: { type: "string" },
+        completed_actions: { type: "array", items: { type: "string" } },
+        remaining_work: { type: "string" },
+      },
+      required: ["run_id", "task_id", "reason", "evidence", "completed_actions", "remaining_work"],
+    },
+  },
 ];
 
 type Json = Record<string, unknown>;
@@ -113,6 +130,18 @@ async function api(path: string, init?: RequestInit): Promise<Json> {
 }
 
 async function callTool(name: string, args: Json): Promise<{ text: string; isError?: boolean }> {
+  if (name === "request_planning") {
+    const control = planningControlSchema.safeParse({
+      fromBotId: BOT_ID, fromThreadId: THREAD_ID, runId: args.run_id, taskId: args.task_id,
+      request: { reason: args.reason, evidence: args.evidence, completedActions: args.completed_actions, remainingWork: args.remaining_work },
+    });
+    if (!control.success) return { text: "request_planning needs run_id, task_id, reason, evidence, completed_actions, and remaining_work, in an active agent session.", isError: true };
+    const result = await api("/api/internal/request-planning", {
+      method: "POST", body: JSON.stringify(control.data),
+    });
+    if (result.accepted !== true) return { text: String(result.error ?? "Planning handoff was not accepted"), isError: true };
+    return { text: "Planning handoff persisted. End this turn without doing the remaining work; the runtime will carry your evidence and completed actions into planning." };
+  }
   if (name === "list_bots") {
     const r = await api(`/api/internal/agents?self=${encodeURIComponent(BOT_ID)}`);
     const bots = (r.bots as Array<Json>) ?? [];

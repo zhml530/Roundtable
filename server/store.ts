@@ -68,6 +68,7 @@ export interface Message {
   /** Origin of a Channel projection; approvals always resolve on this session. */
   source?: { threadId: string; messageId: string };
   executionReport?: string;
+  coordinationRunId?: string;
   artifacts?: Array<{ label: string; path: string; threadId: string }>;
   id: string;
   /** Provider turn that produced this runtime projection. Used by the
