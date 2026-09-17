@@ -5,8 +5,9 @@ import type { Bot, InstanceInfo } from "@/state/store";
 import { ModelPicker } from "./ModelPicker";
 import { EnginesSettings } from "./EnginesSettings";
 import { EngineSetup, needsSignIn } from "./EngineSetup";
+import { ProviderMark } from "./ProviderIcons";
 
-const fixture = vi.hoisted(() => ({ instances: [] as InstanceInfo[] }));
+const fixture = vi.hoisted(() => ({ instances: [] as InstanceInfo[], openControls: true }));
 vi.mock("@/state/store", () => ({
   useStore: () => ({ state: fixture, dispatch: vi.fn(), refreshInstances: vi.fn() }),
   api: vi.fn(),
@@ -14,11 +15,12 @@ vi.mock("@/state/store", () => ({
 // Render the open picker and CLI editor without browser effects or network.
 vi.mock("react", async (original) => {
   const react = await original<typeof import("react")>();
-  return { ...react, useState: (initial: unknown) => react.useState(initial === false ? true : initial) };
+  return { ...react, useState: (initial: unknown) => react.useState(initial === false ? fixture.openControls : initial) };
 });
 
 describe("BugFlow UI wiring", () => {
   beforeEach(() => {
+    fixture.openControls = true;
     vi.stubGlobal("window", { ogb: { platform: "win32" } });
     fixture.instances = [{
       instanceId: "bugflow", driverKind: "bugflowAgent", displayName: "BugFlow Agent",
@@ -34,9 +36,35 @@ describe("BugFlow UI wiring", () => {
     const html = renderToStaticMarkup(createElement(ModelPicker, { bot }));
     expect(html).toContain("BugFlow (agent-controlled)");
     expect(html).not.toContain("Use a local model");
-    expect(html).toContain("lucide-bug");
+    expect(html).toContain('data-provider-mark="bugflow"');
+    expect(html).not.toContain("lucide-bug");
     fixture.instances[0].capabilities!.customModels = undefined;
     expect(renderToStaticMarkup(createElement(ModelPicker, { bot }))).toContain("Use a local model");
+  });
+
+  it("hides installation guidance until Set CLI is expanded", () => {
+    fixture.openControls = false;
+    const closed = renderToStaticMarkup(createElement(EnginesSettings));
+    expect(closed).toContain("Set CLI");
+    expect(closed).toContain('aria-expanded="false"');
+    expect(closed).not.toContain("Standalone Windows EXE");
+    expect(closed).not.toContain("Requires Git");
+    fixture.openControls = true;
+    const opened = renderToStaticMarkup(createElement(EnginesSettings));
+    expect(opened).toContain('aria-expanded="true"');
+    expect(opened).toContain("Standalone Windows EXE");
+  });
+
+  it("uses a scalable outline mark for BugFlow without changing Copilot's icon", () => {
+    const mark = renderToStaticMarkup(createElement(ProviderMark, {
+      driverKind: "bugflowAgent", size: 24, className: "preview-mark",
+    }));
+    expect(mark).toContain('width="24"');
+    expect(mark).toContain('fill="none"');
+    expect(mark).toContain('stroke="currentColor"');
+    expect(mark).toContain("preview-mark");
+    expect(mark).not.toContain("lucide-bug");
+    expect(renderToStaticMarkup(createElement(ProviderMark, { driverKind: "copilotAgent" }))).toContain("lucide-github");
   });
 
   it("offers the standalone installer alongside the BugFlow CLI path editor", () => {

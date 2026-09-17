@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -11,6 +11,7 @@ import {
   parseConfigPatch,
   parseStoredConfig,
   roomTurnTimeoutMinutes,
+  saveConfig,
   skillRecorderEnabled,
   stripWorkspaceCredentialEnv,
   syncCredentialEnv,
@@ -103,6 +104,20 @@ describe("configuration boundaries", () => {
 });
 
 describe("default fleet", () => {
+  it("excludes retired SSH engines but preserves unrelated unknown providers", () => {
+    const cfg: AppConfig = {
+      instances: {
+        remote: { driver: "sshCopilotAgent" },
+        bugflow: { driver: "bugflowAgent" },
+        custom: { driver: "futureDriver", displayName: "SSH research assistant" },
+      },
+    };
+    expect(Object.keys(instanceConfigs(cfg))).toEqual(["bugflow", "custom"]);
+    expect(cfg.instances?.remote.driver).toBe("sshCopilotAgent");
+    expect(instanceConfigs({ instances: { remote: { driver: "sshCopilotAgent" } } }).bugflow.driver).toBe("bugflowAgent");
+    expect(withInstanceCli(cfg, "remote", "ignored").ok).toBe(false);
+  });
+
   it("ships Qwen and Hermes as custom-only engines", () => {
     const map = instanceConfigs({});
     expect(map.qwen).toEqual({ driver: "qwenAgent", environment: {} });
@@ -269,6 +284,37 @@ describe("credential env preference", () => {
       else process.env[name] = saved[name];
     }
     rmSync(join(DATA_DIR, "config.json"), { force: true });
+  });
+
+  it("permanently migrates retired SSH entries without losing unrelated settings or persisting env secrets", () => {
+    const kept = {
+      bugflow: { driver: "bugflowAgent", config: { cli: "C:\\BugFlow\\BugFlow.exe" } },
+      future: { driver: "futureDriver", extraSetting: "preserve" },
+    };
+    const original = {
+      profile: { name: "Ada" },
+      unrelated: { value: "keep" },
+      instances: { ...kept, legacy: { driver: "sshCopilotAgent", config: { host: "legacy" } } },
+    };
+    writeFileSync(join(DATA_DIR, "config.json"), JSON.stringify(original));
+    process.env.XAI_API_KEY = "env-only";
+    const loaded = loadConfig();
+    expect(loaded.instances?.legacy).toBeUndefined();
+    expect(loaded.xai?.key).toBe("env-only");
+    expect(JSON.parse(readFileSync(join(DATA_DIR, "config.json"), "utf8"))).toEqual({
+      ...original, instances: kept,
+    });
+    expect(loadConfig().instances?.legacy).toBeUndefined();
+  });
+
+  it("does not reintroduce retired engines when an older config is saved", () => {
+    writeFileSync(join(DATA_DIR, "config.json"), JSON.stringify({
+      instances: { legacy: { driver: "sshCopilotAgent" }, future: { driver: "futureDriver" } },
+    }));
+    saveConfig({ instances: { anotherLegacy: { driver: "sshCopilotAgent" }, bugflow: { driver: "bugflowAgent" } } });
+    expect(JSON.parse(readFileSync(join(DATA_DIR, "config.json"), "utf8")).instances).toEqual({
+      future: { driver: "futureDriver" }, bugflow: { driver: "bugflowAgent" },
+    });
   });
 
   it("prefers env over the config file for every credential", () => {

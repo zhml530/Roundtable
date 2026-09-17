@@ -6,7 +6,8 @@ Closing a chat or replacing the bridge does not stop that host.
 
 ## Install from Engine Settings
 
-Choose **BugFlow Agent > Install fresh EXE** in Engine Settings. On subsequent
+Choose **BugFlow Agent > Set CLI > Install fresh EXE** in Engine Settings. Installation
+guidance stays hidden until **Set CLI** is expanded. On subsequent
 installations, choose **Rebuild & reinstall**. This is a local source build, not
 a download of a previously built executable and not a Python console launcher.
 

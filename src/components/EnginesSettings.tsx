@@ -272,7 +272,7 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
         </button>
       </div>
       {error && <div role="alert" className="mt-1 text-[12px] text-danger">{error}</div>}
-      {instance.driverKind === "bugflowAgent" && <BugFlowInstall instance={instance} />}
+      {open && instance.driverKind === "bugflowAgent" && <BugFlowInstall instance={instance} />}
       {open && (
         <CustomPicker
           instance={instance}

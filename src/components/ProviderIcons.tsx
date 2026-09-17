@@ -1,5 +1,5 @@
-// Provider brand marks, keyed by driver kind. Official logos only.
-import { Bug, Github, Monitor, Waypoints } from "lucide-react";
+// Provider brand marks, keyed by driver kind.
+import { Github, Monitor, Waypoints } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { HermesMark } from "./HermesMark";
 import { CursorMark } from "./CursorMark";
@@ -9,6 +9,29 @@ export { HermesMark, CursorMark };
 export interface IconProps {
   size?: number;
   className?: string;
+}
+
+/** An open circuit surrounding an F-shaped flow path. */
+export function BugFlowMark({ size = 16, className }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.7}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={cn("text-accent", className)}
+      data-provider-mark="bugflow"
+      aria-hidden
+    >
+      <path d="M14 3H9L3 9v6l6 6h6l6-6v-5" />
+      <path d="M8 16V9h7m-7 4h5" />
+      <circle cx="20" cy="4" r="1" />
+    </svg>
+  );
 }
 
 export function GrokMark({ size = 16, className }: IconProps) {
@@ -149,7 +172,7 @@ export function ProviderMark({ driverKind, size, className }: IconProps & { driv
     case "copilotAgent":
       return <Github size={size} className={cn("text-ink", className)} />;
     case "bugflowAgent":
-      return <Bug size={size} className={cn("text-accent", className)} aria-hidden />;
+      return <BugFlowMark size={size} className={className} />;
     case "antigravityAgent":
       return <AntigravityMark size={size} className={className} />;
     case "opencodeGo":

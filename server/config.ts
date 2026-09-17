@@ -80,6 +80,21 @@ const appConfigSchema = z.object({
 });
 const appConfigPatchSchema = appConfigSchema.omit({ instances: true });
 const jsonObjectSchema = z.record(z.string(), z.json());
+const RETIRED_SSH_DRIVER = "sshCopilotAgent";
+const retiredInstanceSchema = z.object({ driver: z.literal(RETIRED_SSH_DRIVER) });
+
+function removeRetiredInstances(disk: JsonObject): boolean {
+  const parsed = jsonObjectSchema.safeParse(disk.instances);
+  if (!parsed.success) return false;
+  let changed = false;
+  for (const [id, entry] of Object.entries(parsed.data)) {
+    if (!retiredInstanceSchema.safeParse(entry).success) continue;
+    delete parsed.data[id];
+    changed = true;
+  }
+  if (changed) disk.instances = parsed.data;
+  return changed;
+}
 
 export interface AppConfig {
   xai?: { key?: string; url?: string };
@@ -173,11 +188,18 @@ export function ensureDirs() {
 
 export function loadConfig(): AppConfig {
   let cfg: AppConfig = {};
+  let migrated: JsonObject | undefined;
   try {
-    cfg = parseStoredConfig(parseJson(readFileSync(join(DATA_DIR, "config.json"), "utf8")));
+    const disk = jsonObjectSchema.parse(parseJson(readFileSync(join(DATA_DIR, "config.json"), "utf8")));
+    const changed = removeRetiredInstances(disk);
+    cfg = parseStoredConfig(disk);
+    if (changed) migrated = disk;
   } catch {
     /* first run — env fallbacks below */
   }
+  // Persist only the retired entries' removal, before applying credential env.
+  // A write failure must surface instead of silently restoring the old engine.
+  if (migrated) writeFileAtomic(join(DATA_DIR, "config.json"), JSON.stringify(migrated, null, 2), { mode: 0o600 });
   // Env wins over the file for every credential. The desktop shell keeps
   // these secrets OS-encrypted and hands them to this process as env at
   // spawn, leaving config.json without the plaintext field — so the file
@@ -299,6 +321,7 @@ export function saveConfig(patch: Partial<AppConfig>): void {
     }
     disk.instances = diskInstances;
   }
+  removeRetiredInstances(disk);
   mkdirSync(DATA_DIR, { recursive: true });
   writeFileAtomic(p, JSON.stringify(disk, null, 2), { mode: 0o600 });
 }
@@ -423,7 +446,10 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     openaiCompat: { driver: "openai-compat" },
     ...CUSTOM_ONLY,
   } as const;
-  const configured = cfg.instances && Object.keys(cfg.instances).length ? cfg.instances : null;
+  const supported = cfg.instances && Object.fromEntries(
+    Object.entries(cfg.instances).filter(([, entry]) => entry.driver !== RETIRED_SSH_DRIVER),
+  );
+  const configured = supported && Object.keys(supported).length ? supported : null;
   const map: InstanceConfigMap = configured ? { ...configured } : { ...DEFAULT_FLEET };
   // Product fleets pick up newly shipped engines. A one-off test/shadow map
   // (no claude/grok/codex) is left exactly as written.
