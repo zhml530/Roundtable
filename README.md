@@ -1,16 +1,19 @@
 # Roundtable
 
-Roundtable is a local-first desktop app for organizing and running a team of AI bots. Each bot can use its own provider, model, instructions, working directory, and avatar; bots can also collaborate in shared channels.
+Roundtable is a local-first desktop app for organizing and running a team of AI agents. Each agent can use its own provider, model, instructions, working directory, and avatar, while multi-agent channels let them collaborate with shared context.
 
 ## Current capabilities
 
-- Create reusable bot profiles with custom avatars, models, instructions, and working folders.
-- Chat with one bot or bring several bots into a channel with shared context.
-- Review tool and permission requests before an agent performs sensitive work.
+- Run agents through built-in adapters for **GitHub Copilot CLI**, Claude, Codex, Cursor Agent, OpenCode, Gemini, Grok, Kimi, Qwen, Hermes, Droid, Pi, MiniMax, Antigravity, Box Agent, and OpenAI-compatible endpoints.
+- Discover available models and resume provider sessions where supported. GitHub Copilot CLI connects through its ACP server and uses the models available to your Copilot account. Provider availability depends on the corresponding CLI, account, and credentials installed on your computer.
+- Create reusable agent profiles with custom avatars, models, instructions, working folders, and provider settings.
+- Chat directly with an agent or bring several agents into a channel with shared context, persistent sessions, and coordinated task execution.
+- Organize channel work into separate topics. Each topic keeps its own transcript, agent sessions, approvals, artifacts, and project checkpoint.
+- Navigate chats and channels from the workspace sidebar, filter conversations, and use context menus to pin, rename, archive, restore, or delete them.
+- Review tool and permission requests before an agent performs sensitive work, group command activity into readable runs, and inspect files changed during a turn.
+- Attach files and images, search local message history, and move efficiently through long conversations with virtualized, progressively loaded transcripts.
 - Inspect activity, token usage, tasks, routines, and Team Map relationships.
-- Attach files and images to conversations and search local message history.
 - Import and export team definitions for repeatable setups.
-- Run through built-in adapters for Claude, Codex, GitHub Copilot CLI, Cursor Agent, OpenCode, Gemini, Grok, Kimi, Qwen, Hermes, Droid, Pi, MiniMax, Antigravity, Box Agent, and OpenAI-compatible endpoints. Availability depends on the corresponding CLI, account, and credentials installed on your computer.
 - Package the desktop app for macOS, Windows, and Ubuntu.
 
 Connected Apps and USB Android control are not part of the current supported product surface.
@@ -55,11 +58,6 @@ pnpm test
 pnpm build
 ```
 
-Provider-specific setup:
-
-- [Cursor Agent CLI](docs/cursor.md)
-- [OpenCode](docs/opencode-go.md)
-- [Ubuntu desktop](docs/linux-desktop.md)
 
 Project documentation is also available under [`apps/docs`](apps/docs).
 

@@ -193,6 +193,12 @@ export interface TaskCheckpoint {
 export interface TaskRecord {
   threadId: ThreadId;
   title: string;
+  /** Ownership of the current title. Missing on records created before
+   * provenance was introduced; those records are never overwritten by an
+   * asynchronous generated title. */
+  titleSource?: "first-message" | "generated" | "user" | "assigned";
+  /** Internal once-only claim for the best-effort first-turn generation. */
+  titleGenerationAttemptedAt?: number;
   createdAt: number;
   /** provider-native continuation per instance, for THIS task only */
   resumeCursors: Record<string, unknown>;
@@ -1158,6 +1164,7 @@ export class Store {
       createdAt: Date.now(),
       resumeCursors: {},
     };
+    if (title?.trim()) task.titleSource = "assigned";
     bot.tasks = [task, ...(bot.tasks ?? [])];
     if (activate) {
       bot.threadId = task.threadId;
@@ -1183,6 +1190,7 @@ export class Store {
     const task = this.bot(botId)?.tasks?.find((t) => t.threadId === threadId);
     if (!task) return null;
     task.title = title.trim().slice(0, 80) || UNTITLED_TASK;
+    task.titleSource = "user";
     this.saveBots();
     this.emit({ type: "bot", botId });
     return task;
@@ -1209,8 +1217,31 @@ export class Store {
     const task = threadId ? this.taskByThread(botId, threadId) : this.activeTask(botId);
     if (!task || task.title !== UNTITLED_TASK) return;
     task.title = titleFromMessage(text);
+    task.titleSource = "first-message";
     this.saveBots();
     this.emit({ type: "bot", botId });
+  }
+
+  /** Replace only the deterministic first-message fallback. A user rename or
+   * assigned system title always wins, including when it races this update. */
+  claimTaskTitleGeneration(botId: string, threadId: string): boolean {
+    const task = this.taskByThread(botId, threadId);
+    if (!task || task.titleSource !== "first-message" || task.titleGenerationAttemptedAt) return false;
+    task.titleGenerationAttemptedAt = Date.now();
+    this.saveBots();
+    return true;
+  }
+
+  setGeneratedTaskTitle(botId: string, threadId: string, title: string): TaskRecord | null {
+    const task = this.taskByThread(botId, threadId);
+    if (!task || task.titleSource !== "first-message") return null;
+    const clean = title.trim().slice(0, 80);
+    if (!clean) return null;
+    task.title = clean;
+    task.titleSource = "generated";
+    this.saveBots();
+    this.emit({ type: "bot", botId });
+    return task;
   }
 
   /** Delete a chat without deleting its agent. Empty threadId means no active chat. */

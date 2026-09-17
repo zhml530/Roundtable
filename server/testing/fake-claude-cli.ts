@@ -190,6 +190,23 @@ const playTurn = (prompt: JsonValue) => {
     finishDirect(text);
     return;
   }
+
+  if (promptText(prompt).includes("TITLE_GENERATION_FIXTURE")) {
+    const titleTurn = argv.some((arg) => arg.includes("generate concise titles for Roundtable conversations"));
+    if (!titleTurn) {
+      setInterval(() => {}, 1_000);
+      return;
+    }
+    out({
+      type: "assistant",
+      message: { content: [{ type: "text", text: JSON.stringify({ title: "Async Conversation Titles" }) }] },
+    });
+    out({ type: "result", is_error: false, stop_reason: "end_turn", usage: { input_tokens: 10, output_tokens: 5 } });
+    turnRunning = false;
+    finishIfDone();
+    return;
+  }
+
   if (process.env.FAKE_CLAUDE_CHANNEL_FIXTURE === "1" && promptText(prompt).includes("CHANNEL_SESSION_FIXTURE")) {
     const finishChannel = (text: string) => {
       out({ type: "assistant", message: { content: [{ type: "text", text }] } });

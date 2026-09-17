@@ -3,7 +3,7 @@
 // does not become a wall of competing motion. User-created channels send every
 // message to the system Coordinator; DM rooms keep peer routing.
 import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, Folder, FolderOpen, Loader2, MessageSquareReply, Pin, PinOff, Search, X } from "lucide-react";
+import { Folder, FolderOpen, Loader2, MessageSquareReply, Pin, PinOff, Search, X } from "lucide-react";
 import {
   api,
   useStore,
@@ -28,20 +28,15 @@ import { ManageMembersPanel } from "./ManageMembersPanel";
 import { CoordinatorMissionControl } from "./CoordinatorMissionControl";
 import { ChannelDelivery } from "./ChannelDelivery";
 import { ChannelQuestion } from "./ChannelQuestion";
+import { MessageViewport } from "./MessageViewport";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { cn } from "@/lib/cn";
 import { useFocusMessage } from "@/lib/focus-message";
 import { shortPath } from "@/lib/short-path";
-import { BOTTOM_FOLLOW_THRESHOLD, shouldResumeBottomFollow } from "@/lib/bottom-follow";
 import { hasVisibleStreamingText, showWorkingDots } from "@/lib/turn-tail";
 import { splitAttachedImages } from "@/lib/composer-attachments";
-import {
-  TRANSCRIPT_WINDOW_SIZE,
-  expandWindowStart,
-  focusWindowRange,
-  resolveTranscriptWindow,
-  tailWindowStart,
-} from "@/lib/transcript-window";
+import { channelViewportRows, isCoordinatorMessage } from "@/lib/channel-message-viewport";
+export { isCoordinatorMessage } from "@/lib/channel-message-viewport";
 
 function dayLabel(at: number): string {
   const d = new Date(at);
@@ -51,11 +46,6 @@ function dayLabel(at: number): string {
   if (diffDays === 0) return "Today";
   if (diffDays === 1) return "Yesterday";
   return d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
-}
-
-/** Older persisted Coordinator deliveries predate the explicit author field. */
-export function isCoordinatorMessage(message: Message | undefined): boolean {
-  return message?.author === "coordinator" || Boolean(message?.executionReport && !message.from);
 }
 
 /** 32px avatar + name, shown once per sender cluster. */
@@ -109,14 +99,18 @@ const Transcript = memo(function Transcript({
   messages,
   transcript,
   onReply,
+  showFirstCluster,
+  showFirstDaySeparator,
 }: {
   group: Group;
   members: Bot[];
-  /** The windowed suffix of group.messages — the boundary lives in GroupView. */
+  /** The virtualized logical rows to render. */
   messages: Message[];
-  /** Full room transcript, used to resolve quoted messages outside the mounted window. */
+  /** Full room transcript, used to resolve quoted messages outside the mounted rows. */
   transcript: Message[];
   onReply: (message: Message) => void;
+  showFirstCluster?: boolean;
+  showFirstDaySeparator?: boolean;
 }) {
   const { dispatch } = useStore();
   const memberOf = (id?: string) => members.find((b) => b.id === id);
@@ -125,15 +119,19 @@ const Transcript = memo(function Transcript({
     <>
       {textMessages.map((m, i) => {
         const prev = textMessages[i - 1];
-        const newDay = !prev || new Date(prev.at).toDateString() !== new Date(m.at).toDateString();
+        const newDay = !prev && showFirstDaySeparator !== undefined
+          ? showFirstDaySeparator
+          : !prev || new Date(prev.at).toDateString() !== new Date(m.at).toDateString();
         const user = m.role === "user";
         const attachedImages = user && m.text ? splitAttachedImages(m.text) : null;
         const coordinator = isCoordinatorMessage(m);
-        const newCluster = !prev
-          || prev.role !== m.role
-          || prev.from?.botId !== m.from?.botId
-          || isCoordinatorMessage(prev) !== coordinator
-          || newDay;
+        const newCluster = !prev && showFirstCluster !== undefined
+          ? showFirstCluster
+          : !prev
+            || prev.role !== m.role
+            || prev.from?.botId !== m.from?.botId
+            || isCoordinatorMessage(prev) !== coordinator
+            || newDay;
         const row =
           // a member can hit a permission ask mid-turn; without this the
           // card never rendered here and the bot waited out its timeout.
@@ -366,7 +364,6 @@ function RoomWorkingFolderChip({ group, onToggle }: { group: Group; onToggle: ()
       </button>
     );
   }
-  const name = folder.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || folder;
   return (
     <button
       onClick={onToggle}
@@ -374,7 +371,7 @@ function RoomWorkingFolderChip({ group, onToggle }: { group: Group; onToggle: ()
       title={`Working folder: ${folder}`}
     >
       <Folder size={12} />
-      <span className="truncate font-mono">{name}</span>
+      <span className="truncate">Working folder</span>
     </button>
   );
 }
@@ -546,11 +543,6 @@ export function GroupView({ group }: { group: Group }) {
     return bot && group.memberIds.includes(botId) && hasVisibleStreamingText(text) ? [{ bot, threadId, text }] : [];
   });
   const channelStreamText = channelStreams.map((entry) => entry.text).join("");
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const [follow, setFollow] = useState(true);
-  const followRef = useRef(true);
-  const previousScrollTop = useRef(0);
-  const touchY = useRef(0);
   const [bulletinOpen, setBulletinOpen] = useState(false);
   const [bulletinDraft, setBulletinDraft] = useState(group.bulletin);
   const [folderOpen, setFolderOpen] = useState(false);
@@ -579,109 +571,16 @@ export function GroupView({ group }: { group: Group }) {
   const speaker = members.find((b) => b.id === group.busyBotId);
   const setupPending = roomNeedsSetup(group);
 
-  // Windowed transcript, mirroring ChatView: only a tail of the room mounts;
-  // the anchored boundary re-tails on a render-phase reset when the room (or
-  // its thread) changes. Working dots below stay on the FULL list's tail.
   const transcriptKey = `${group.id}:${group.threadId}`;
-  const [transcriptWindow, setTranscriptWindow] = useState<{
-    key: string;
-    start: number;
-    end: number | null;
-  }>(() => ({
-    key: transcriptKey,
-    start: tailWindowStart(group.messages.length),
-    end: null,
-  }));
-  if (transcriptWindow.key !== transcriptKey) {
-    setTranscriptWindow({ key: transcriptKey, start: tailWindowStart(group.messages.length), end: null });
-  }
-  const {
-    visible: windowedMessages,
-    hiddenCount,
-    laterCount,
-    startIndex,
-    endIndex,
-  } = useMemo(
-    () => resolveTranscriptWindow(group.messages, transcriptWindow.start, TRANSCRIPT_WINDOW_SIZE, transcriptWindow.end),
-    [group.messages, transcriptWindow.start, transcriptWindow.end],
-  );
-
-  const setBottomFollow = useCallback((next: boolean) => {
-    followRef.current = next;
-    setFollow(next);
-  }, []);
-
-  useEffect(() => setBottomFollow(true), [group.id, setBottomFollow]);
-
-  const appliedFocus = useRef<number | null>(null);
-  useEffect(() => {
-    const focus = state.focusMessage;
-    if (!focus || focus.consumed || focus.threadId !== group.threadId || appliedFocus.current === focus.nonce) return;
-    const targetIndex = group.messages.findIndex((message) => message.id === focus.messageId);
-    if (targetIndex < 0) return;
-    appliedFocus.current = focus.nonce;
-    const range = focusWindowRange(group.messages.length, targetIndex);
-    setBottomFollow(false);
-    setTranscriptWindow({ key: transcriptKey, start: range.start, end: range.end });
-  }, [group.messages, group.threadId, setBottomFollow, state.focusMessage, transcriptKey]);
+  const viewportRows = useMemo(() => channelViewportRows(group.messages), [group.messages]);
   useFocusMessage(group.threadId, group.messages.length > 0);
 
   useEffect(() => setBulletinDraft(group.bulletin), [group.id, group.bulletin]);
   // an open folder editor belongs to the room it was opened in
   useEffect(() => setFolderOpen(false), [group.id]);
   useEffect(() => setMembersOpen(false), [group.id]);
-  // deps track the FULL messages.length, so expanding the window (which only
-  // changes windowedMessages) can never re-trigger this bottom scrollTo
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el || !followRef.current) return;
-    el.scrollTo({ top: el.scrollHeight });
-    previousScrollTop.current = el.scrollTop;
-  }, [group.id, group.messages.length, streaming, channelStreamText, group.busyBotId, follow]);
-
-  // Expanding prepends rows: capture the height first, then after the commit
-  // shift scrollTop by the growth so the message under the cursor stays put
-  // (browser scroll anchoring is disabled on this container).
-  const preExpandHeight = useRef<number | null>(null);
   const pageState = state.messagePages[group.threadId];
-  const canLoadEarlier = hiddenCount > 0 || pageState?.hasMore === true;
-  const showEarlier = async () => {
-    preExpandHeight.current = scrollRef.current?.scrollHeight ?? null;
-    // expanding means reading scrollback — never let a mid-expand stream
-    // event pin the viewport back to the bottom
-    setBottomFollow(false);
-    if (hiddenCount > 0) {
-      const start = expandWindowStart(startIndex);
-      setTranscriptWindow((w) => ({ ...w, start }));
-    } else {
-      try {
-        await loadEarlierMessages(group.threadId);
-        setTranscriptWindow((window) => ({ ...window, start: 0 }));
-      } catch {
-        preExpandHeight.current = null;
-      }
-    }
-  };
-  useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (preExpandHeight.current === null || !el) return;
-    el.scrollTop += el.scrollHeight - preExpandHeight.current;
-    preExpandHeight.current = null;
-    // keep the resume-follow heuristic from reading the restore as a
-    // downward user scroll
-    previousScrollTop.current = el.scrollTop;
-  }, [group.messages.length, transcriptWindow.start]);
-
-  const showLater = () => {
-    setBottomFollow(false);
-    const nextEnd = Math.min(group.messages.length, endIndex + TRANSCRIPT_WINDOW_SIZE);
-    setTranscriptWindow((w) => ({ ...w, end: nextEnd >= group.messages.length ? null : nextEnd }));
-  };
-
-  const atEnd = () => {
-    const el = scrollRef.current;
-    return !el || el.scrollHeight - el.scrollTop - el.clientHeight < BOTTOM_FOLLOW_THRESHOLD;
-  };
+  const canLoadEarlier = pageState?.hasMore === true;
 
   const saveBulletin = () => {
     setBulletinOpen(false);
@@ -864,143 +763,86 @@ export function GroupView({ group }: { group: Group }) {
       })()}
 
       {/* Transcript */}
-      <div
-        ref={scrollRef}
-        className="flex-1 overflow-y-auto px-5 [overflow-anchor:none]"
-        onWheel={(e) => {
-          if (e.deltaY < 0 && e.currentTarget.scrollHeight > e.currentTarget.clientHeight) setBottomFollow(false);
-          else if (atEnd()) setBottomFollow(true);
-        }}
-        onTouchStart={(e) => (touchY.current = e.touches[0]?.clientY ?? 0)}
-        onTouchMove={(e) => {
-          const y = e.touches[0]?.clientY ?? 0;
-          if (y > touchY.current + 4) setBottomFollow(false);
-          else if (atEnd()) setBottomFollow(true);
-        }}
-        onScroll={() => {
-          const el = scrollRef.current;
-          if (!el) return;
-          const scrollTop = el.scrollTop;
-          if (scrollTop < 80 && canLoadEarlier && !pageState?.loading && (hiddenCount > 0 || !pageState?.error)) void showEarlier();
-          const resume = shouldResumeBottomFollow({
-            following: followRef.current,
-            previousScrollTop: previousScrollTop.current,
-            scrollTop,
-            distanceFromBottom: el.scrollHeight - scrollTop - el.clientHeight,
-          });
-          previousScrollTop.current = scrollTop;
-          if (resume) setBottomFollow(true);
-        }}
-      >
-        {setupPending ? (
+      {setupPending ? (
+        <div className="flex-1 overflow-y-auto px-5">
           <div className="mx-auto flex min-h-full max-w-[900px] items-center py-8">
             <RoomSetup group={group} />
           </div>
-        ) : (
-        <div
-          className="mx-auto flex max-w-[900px] flex-col gap-3 pb-4"
-          role="log"
-          aria-live="polite"
-          aria-label={`Room ${group.name}`}
-        >
-          {group.messages.length === 0 && (
-            <div className="flex flex-1 flex-col items-center justify-center gap-3 py-24 text-center">
-              <div className="flex -space-x-2">
-                {members.slice(0, 3).map((b) => (
-                  <BotAvatar
-                    key={b.id}
-                    bot={b}
-                    state="happy"
-                    size={44}
-                    motion="none"
-                    motionKey={0}
-                    animated={false}
-                  />
-                ))}
-              </div>
-              <div className="text-[17px] font-semibold text-ink">{group.topicName ?? group.name}</div>
-              <div className="max-w-[380px] text-[14px] text-ink-secondary">
-                Give Coordinator a goal. Mention a Bot to constrain assignment, or use @everyone to include the whole channel.
-              </div>
-            </div>
-          )}
-          {canLoadEarlier && pageState?.loading && (
-            <div
-              className="flex items-center justify-center gap-2 pt-2 text-[12.5px] text-ink-secondary"
-              role="status"
-              aria-live="polite"
-            >
-              <Loader2 size={14} className="animate-spin" aria-hidden="true" />
-              Loading earlier messages…
-            </div>
-          )}
-          {hiddenCount === 0 && pageState?.hasMore && pageState.error && (
-            <div className="flex justify-center pt-2">
-              <button
-                onClick={() => void showEarlier()}
-                className="rounded-full border border-hairline/40 bg-panel px-3 py-1 text-[12.5px] text-ink-secondary hover:bg-raised hover:text-ink"
-              >
-                Retry loading earlier messages
-              </button>
-            </div>
-          )}
-          <Transcript
-            group={group}
-            members={members}
-            messages={windowedMessages}
-            transcript={group.messages}
-            onReply={setReplyTo}
-          />
-          {laterCount > 0 && (
-            <div className="flex justify-center">
-              <button
-                onClick={showLater}
-                className="rounded-full border border-hairline/40 bg-panel px-3 py-1 text-[12.5px] text-ink-secondary hover:bg-raised hover:text-ink"
-              >
-                Show later messages ({laterCount} more)
-              </button>
-            </div>
-          )}
-          {speaker && showWorkingDots(true, visibleStreaming, group.messages.at(-1), speaker.id) && (
-            <>
-              <ClusterLabel bot={speaker} name={speaker.name} color={speaker.color} />
-              <div className="flex justify-start">
-                <div className="flex items-center gap-1.5 rounded-2xl bg-raised px-4 py-3">
-                  <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:0ms]" />
-                  <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:150ms]" />
-                  <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:300ms]" />
-                </div>
-              </div>
-            </>
-          )}
-          {speaker && visibleStreaming && (
-            <>
-              <ClusterLabel bot={speaker} name={speaker.name} color={speaker.color} />
-              <StreamingBubble text={visibleStreaming} />
-            </>
-          )}
-          {channelStreams.map(({ bot, threadId, text }) => <div key={threadId} aria-label={`${bot.name} reply`}>
-            <ClusterLabel bot={bot} name={bot.name} color={bot.color} />
-            <StreamingBubble text={text} />
-          </div>)}
         </div>
-        )}
-      </div>
-
-      {!follow && (
-        <button
-          onClick={() => {
-            setBottomFollow(true);
-            setTranscriptWindow({ key: transcriptKey, start: tailWindowStart(group.messages.length), end: null });
-            requestAnimationFrame(() => {
-              scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-            });
-          }}
-          aria-label="Jump to latest messages"
-          className="animate-pop-in absolute bottom-24 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-hairline/40 bg-raised px-3 py-1.5 text-[12.5px] text-ink shadow-lg hover:bg-raised-hover"
-        >
-          <ArrowDown size={13} /> Jump to latest
-        </button>
+      ) : (
+        <MessageViewport
+          key={transcriptKey}
+          ariaLabel={`Room ${group.name}`}
+          items={viewportRows}
+          canLoadEarlier={canLoadEarlier}
+          loading={pageState?.loading === true}
+          error={pageState?.error}
+          onLoadEarlier={() => loadEarlierMessages(group.threadId)}
+          focusMessageId={state.focusMessage?.threadId === group.threadId && !state.focusMessage.consumed
+            ? state.focusMessage.messageId
+            : undefined}
+          streamRevision={`${visibleStreaming?.length ?? 0}:${channelStreamText.length}:${group.busyBotId ?? ""}:${channelStreams.map(({ threadId, text }) => `${threadId}:${text.length}`).join("|")}`}
+          renderItem={(row) => (
+            <Transcript
+              group={group}
+              members={members}
+              messages={[row.message]}
+              transcript={group.messages}
+              onReply={setReplyTo}
+              showFirstDaySeparator={row.showDaySeparator}
+              showFirstCluster={row.showCluster}
+            />
+          )}
+          footer={(
+            <>
+              {group.messages.length === 0 && (
+                <div className="flex flex-1 flex-col items-center justify-center gap-3 py-24 text-center">
+                  <div className="flex -space-x-2">
+                    {members.slice(0, 3).map((b) => (
+                      <BotAvatar
+                        key={b.id}
+                        bot={b}
+                        state="happy"
+                        size={44}
+                        motion="none"
+                        motionKey={0}
+                        animated={false}
+                      />
+                    ))}
+                  </div>
+                  <div className="text-[17px] font-semibold text-ink">{group.topicName ?? group.name}</div>
+                  <div className="max-w-[380px] text-[14px] text-ink-secondary">
+                    Give Coordinator a goal. Mention a Bot to constrain assignment, or use @everyone to include the whole channel.
+                  </div>
+                </div>
+              )}
+              {speaker && showWorkingDots(true, visibleStreaming, group.messages.at(-1), speaker.id) && (
+                <>
+                  <ClusterLabel bot={speaker} name={speaker.name} color={speaker.color} />
+                  <div className="flex justify-start">
+                    <div className="flex items-center gap-1.5 rounded-2xl bg-raised px-4 py-3">
+                      <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:0ms]" />
+                      <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:150ms]" />
+                      <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:300ms]" />
+                    </div>
+                  </div>
+                </>
+              )}
+              {speaker && visibleStreaming && (
+                <>
+                  <ClusterLabel bot={speaker} name={speaker.name} color={speaker.color} />
+                  <StreamingBubble text={visibleStreaming} />
+                </>
+              )}
+              {channelStreams.map(({ bot, threadId, text }) => (
+                <div key={threadId} aria-label={`${bot.name} reply`}>
+                  <ClusterLabel bot={bot} name={bot.name} color={bot.color} />
+                  <StreamingBubble text={text} />
+                </div>
+              ))}
+            </>
+          )}
+        />
       )}
 
       {!setupPending && !group.dm && (

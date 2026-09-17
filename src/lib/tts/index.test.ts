@@ -24,23 +24,37 @@ function json(body: unknown): Response {
   });
 }
 
+function stubBridge(handler: (request: { path: string; body?: string }) => Promise<Response>): void {
+  vi.stubGlobal("ogb", {
+    orchestration: {
+      request: vi.fn(async (request: { path: string; body?: string }) => {
+        const response = await handler(request);
+        return {
+          status: response.status,
+          headers: Object.fromEntries(response.headers.entries()),
+          body: new Uint8Array(await response.arrayBuffer()),
+        };
+      }),
+      onEvent: vi.fn(() => () => {}),
+    },
+  });
+}
+
 describe("Speaker lifecycle", () => {
   beforeEach(() => {
     FakeAudio.latest = null;
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     vi.stubGlobal("Audio", FakeAudio);
     vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:voice-test");
     vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
   });
 
   it("settles an in-progress speak when stop interrupts audio", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: string | URL | Request) =>
-        String(input).endsWith("/prepare")
-          ? json({ ready: true, utterances: ["Hello there."] })
-          : new Response(new Blob(["mp3"]), { status: 200 }),
-      ),
+    stubBridge(async ({ path }) =>
+      path.endsWith("/prepare")
+        ? json({ ready: true, utterances: ["Hello there."] })
+        : new Response(new Blob(["mp3"]), { status: 200 }),
     );
     const speaker = new Speaker();
     const speaking = speaker.speak("Hello there.");
@@ -54,37 +68,29 @@ describe("Speaker lifecycle", () => {
   });
 
   it("aborts preparation when stopped instead of leaving a request alive", async () => {
-    let signal: AbortSignal | undefined;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((_input: string | URL | Request, init?: RequestInit) => {
-        signal = init?.signal ?? undefined;
-        return new Promise<Response>((_resolve, reject) => {
-          signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
-        });
-      }),
-    );
+    let requestStarted = false;
+    stubBridge(async () => {
+      requestStarted = true;
+      return new Promise<Response>(() => {});
+    });
     const speaker = new Speaker();
     const speaking = speaker.speak("A long response");
 
     speaker.stop();
 
     await expect(speaking).resolves.toBeUndefined();
-    expect(signal?.aborted).toBe(true);
+    expect(requestStarted).toBe(false);
     expect(speaker.state).toEqual({ status: "idle" });
   });
 
   it("passes a per-bot voice through preparation and synthesis", async () => {
     const bodies: unknown[] = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-        bodies.push(JSON.parse(String(init?.body)));
-        return String(input).endsWith("/prepare")
-          ? json({ ready: true, utterances: ["Distinct voice."] })
-          : new Response(new Blob(["mp3"]), { status: 200 });
-      }),
-    );
+    stubBridge(async ({ path, body }) => {
+      bodies.push(JSON.parse(body ?? "{}"));
+      return path.endsWith("/prepare")
+        ? json({ ready: true, utterances: ["Distinct voice."] })
+        : new Response(new Blob(["mp3"]), { status: 200 });
+    });
     const speaker = new Speaker();
     const speaking = speaker.speak("Distinct voice.", { voiceId: "voice-bot" });
     await vi.waitFor(() => expect(FakeAudio.latest).not.toBeNull());

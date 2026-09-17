@@ -21,6 +21,7 @@ import {
 
 import { approvalKey, autoVerdict } from "./auto-approve.ts";
 import { collectChannelArtifacts, readChannelArtifact } from "./channel-artifacts.ts";
+import { generateConversationTitle } from "./conversation-title.ts";
 import { appendDecision, readDecisions } from "./decision-log.ts";
 import { validateBotCwd } from "./bot-cwd.ts";
 import { attachmentExists, extensionForMime, IMAGE_MAX_BYTES, readAttachment, saveImage, type SavedAttachment } from "./attachments.ts";
@@ -208,6 +209,7 @@ function agentsIntegration(botId: string, threadId: string, depth: number) {
     env: {
       ...AGENTS_NODE_FLAG,
       OMB_HARNESS_PIPE: process.env.OMB_HARNESS_PIPE ?? "",
+      OMB_HARNESS_URL: `http://127.0.0.1:${PORT}`,
       OMB_BOT_ID: botId,
       OMB_THREAD_ID: threadId,
       OMB_COMMS_TOKEN: COMMS_TOKEN,
@@ -290,7 +292,12 @@ store.seedIfEmpty();
  * paired phone has even less business holding provider session identifiers
  * than the desktop window did. Stripped here rather than at each call site
  * so a new broadcast cannot forget. */
-const wireTask = ({ resumeCursors, lastInstanceId, ...task }: TaskRecord) => task;
+const wireTask = ({
+  resumeCursors: _resumeCursors,
+  lastInstanceId: _lastInstanceId,
+  titleGenerationAttemptedAt: _titleGenerationAttemptedAt,
+  ...task
+}: TaskRecord) => task;
 
 const wireBot = (bot: NonNullable<ReturnType<typeof store.bot>>) => {
   const { resumeCursors, tasks, ...rest } = bot;
@@ -634,6 +641,69 @@ const lastReply = new Map<string, string>();
 // attached only after the provider settles, never inferred from a streaming
 // fragment that may be superseded by a later assistant message.
 const lastReplyMessageId = new Map<string, string>();
+// Conversation titles have their own routing seam even though the MVP uses
+// the Coordinator Backup selection. A future dedicated title model changes
+// only this resolver, not task/title semantics or the provider call path.
+const conversationTitleModel = () => coordinatorConfig(cfg).backup;
+const CONVERSATION_TITLE_TIMEOUT_MS = 20_000;
+
+function invokeConversationTitleModel(prompt: string, system: string): Promise<string> {
+  const selection = conversationTitleModel();
+  if (!selection) return Promise.reject(new Error("no conversation title model configured"));
+  const instance = registry.get(selection.instanceId);
+  if (!instance) return Promise.reject(new Error(`conversation title engine ${selection.instanceId} is unavailable`));
+
+  return new Promise((resolve, reject) => {
+    const threadId = `conversation-title:${randomUUID()}`;
+    let text = "";
+    let settled = false;
+    let runtimeError: string | undefined;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unsubscribe();
+      if (error) reject(error);
+      else resolve(text);
+    };
+    const unsubscribe = bus.subscribe((event: RuntimeEvent) => {
+      if (event.threadId !== threadId) return;
+      if (event.type === "item.completed" && event.itemType === "assistant_text") {
+        text += `${text ? "\n" : ""}${event.text}`;
+      } else if (event.type === "runtime.error") {
+        runtimeError = event.message;
+      } else if (event.type === "turn.completed") {
+        finish(event.ok ? undefined : new Error(runtimeError || event.stopReason || "conversation title generation failed"));
+      }
+    });
+    const timer = setTimeout(() => {
+      void instance.adapter.interruptTurn(threadId).catch(() => {});
+      finish(new Error("conversation title generation timed out"));
+    }, CONVERSATION_TITLE_TIMEOUT_MS);
+    timer.unref?.();
+    void instance.adapter.sendTurn({
+      threadId,
+      text: prompt,
+      model: selection.model,
+      effort: selection.effort,
+      system,
+    }).catch((error) => finish(error instanceof Error ? error : new Error(String(error))));
+  });
+}
+
+function generateTitleAfterFirstUserMessage(botId: string, threadId: string, firstUserMessage: string) {
+  const task = store.taskByThread(botId, threadId);
+  const selection = conversationTitleModel();
+  if (!selection || task?.titleSource !== "first-message") return;
+  if (!firstUserMessage || !store.claimTaskTitleGeneration(botId, threadId)) return;
+
+  void generateConversationTitle(firstUserMessage, undefined, invokeConversationTitleModel)
+    .then((title) => {
+      if (title) store.setGeneratedTaskTitle(botId, threadId, title);
+    })
+    // Best-effort metadata must never affect the completed Agent turn.
+    .catch(() => {});
+}
 // A Task can reuse a workspace across many turns. This lower bound keeps a
 // delivery focused on this turn's output, while collectChannelArtifacts still
 // permits an older file when the Bot explicitly named it in its final answer.
@@ -1408,6 +1478,9 @@ async function startTurn(
     userMessage = opts?.cardContinuation
       ? { id: `card-${randomUUID()}`, at: Date.now(), role: "user", kind: "text", text }
       : store.appendMessage(threadId, { role: "user", kind: "text", text, replyToId: opts?.replyTo?.id });
+  }
+  if (!opts?.cardContinuation) {
+    generateTitleAfterFirstUserMessage(bot.id, threadId, userMessage.text ?? text);
   }
 
   // transcript for API-backed drivers: settled text turns on the ACTIVE

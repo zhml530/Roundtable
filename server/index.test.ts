@@ -1816,6 +1816,7 @@ describe("harness HTTP API", () => {
       }, { timeout: 5_000 }).toBe(true);
       const dump = JSON.parse(readFileSync(fakeClaudeDump, "utf8"));
       const proxyEnv = dump.mcpConfig.mcpServers.agents.env;
+      expect(proxyEnv.OMB_HARNESS_URL).toBe(BASE);
       const run = (await api("GET", `/api/groups/${room.id}/coordination`)).body.run;
       expect(run.tasks.some((task: { threadId?: string }) => task.threadId === proxyEnv.OMB_THREAD_ID)).toBe(true);
       for (const endpoint of ["ask-bot", "delegate-bot"]) {
@@ -2530,5 +2531,32 @@ describe("instance CLI override API", () => {
     const overlapping = await api("PATCH", "/api/instances/ghost", { cli: "/tmp/ghost-overlap" });
     expect(overlapping.status).toBe(409);
     expect((await slowConfigWrite).status).toBe(200);
+  });
+
+  it("uses the Coordinator backup model to title a chat while its first turn is still running", async () => {
+    const bot = (await api("POST", "/api/bots", {})).body.bot;
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      })).status).toBe(200);
+      expect((await api("PATCH", "/api/config", {
+        coordinator: { backup: { instanceId: "claude", model: "claude-haiku-4-5" } },
+      })).status).toBe(200);
+
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, {
+        text: "TITLE_GENERATION_FIXTURE implement generated chat titles",
+      })).status).toBe(202);
+
+      await expect.poll(async () => {
+        const listed = (await api("GET", "/api/bots")).body.bots.find((candidate: { id: string }) => candidate.id === bot.id);
+        return {
+          title: listed.tasks.find((task: { threadId: string }) => task.threadId === listed.threadId)?.title,
+          busy: listed.busy,
+        };
+      }, { timeout: 10_000 }).toEqual({ title: "Async Conversation Titles", busy: true });
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/interrupt`);
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
   });
 });
