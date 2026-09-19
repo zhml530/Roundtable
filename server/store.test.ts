@@ -9,6 +9,7 @@ import { DATA_DIR } from "./config.ts";
 import type { ModelSelection } from "./contracts.ts";
 import { peerAllowKey } from "./peer-approval-key.ts";
 import { Store, type BotRecord } from "./store.ts";
+import { agentColorForName } from "../shared/agent-avatar.ts";
 
 const selection = (): ModelSelection => ({ instanceId: "claude", model: "claude-sonnet-5" });
 
@@ -137,11 +138,12 @@ describe("Store", () => {
     expect(reloaded.bot(bot.id)?.composio).toBe(false);
   });
 
-  it("rotates colors across created bots", () => {
+  it("derives default colors deterministically from bot names", () => {
     const store = new Store(selection);
-    const first = store.createBot();
-    const second = store.createBot();
-    expect(first.color).not.toBe(second.color);
+    const first = store.createBot({ name: "Scout" });
+    const second = store.createBot({ name: "Pixel" });
+    expect(first.color).toBe(agentColorForName(first.name));
+    expect(second.color).toBe(agentColorForName(second.name));
   });
 
   it("keeps channel membership without creating a lead", () => {

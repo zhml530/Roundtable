@@ -457,6 +457,13 @@ describe("ChatView command run summary", () => {
 });
 
 describe("ChatView conversation header", () => {
+  it("does not render the agent description in a new chat's message area", () => {
+    const markup = renderMessages([], { description: "Internal agent profile instructions." });
+
+    expect(markup).toContain("Send a message to start the conversation.");
+    expect(markup).not.toContain("Internal agent profile instructions.");
+  });
+
   it("shows the active conversation title above the agent name", () => {
     const bot: Bot = {
       id: "agent", threadId: "current", name: "Github Copilot", title: "", description: "",

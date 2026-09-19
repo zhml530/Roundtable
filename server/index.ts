@@ -4045,7 +4045,6 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
         return json(res, 404, { error: "no such bot" });
       }
       const visible = wireBot(bot);
-      broadcast({ kind: "bot", bot: visible });
       return json(res, 201, { avatarUrl, bot: visible });
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/profile$/);
@@ -4058,7 +4057,6 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
       const bot = store.patchBot(m[1], parsed.patch);
       if (!bot) return json(res, 404, { error: "no such bot" });
       const visible = wireBot(bot);
-      broadcast({ kind: "bot", bot: visible });
       return json(res, 200, { bot: visible });
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/read$/);
@@ -4066,7 +4064,6 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
       const bot = store.patchBot(m[1], { unread: false });
       if (!bot) return json(res, 404, { error: "no such bot" });
       const visible = wireBot(bot);
-      broadcast({ kind: "bot", bot: visible });
       return json(res, 200, { bot: visible });
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/always-allow$/);
@@ -4089,7 +4086,6 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
         alwaysAllow: [...new Set([...(bot.alwaysAllow ?? []), allowKey])].slice(0, 200),
       })!;
       const visible = wireBot(updated);
-      broadcast({ kind: "bot", bot: visible });
       return json(res, 200, { bot: visible });
     }
     m = path.match(/^\/api\/bots\/([\w-]+)$/);
