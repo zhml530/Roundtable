@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Message } from "@/state/store";
-import { changedFilesFromMessages, type ChangedFile } from "./changed-files";
+import { changedFileUrl, changedFilesFromMessages, type ChangedFile } from "./changed-files";
 
 const activity = (id: string, changedFiles: ChangedFile[], ok: boolean | undefined = true): Message => ({
   id, at: Number(id), role: "bot", kind: "activity",
@@ -8,6 +8,20 @@ const activity = (id: string, changedFiles: ChangedFile[], ok: boolean | undefin
 });
 
 describe("changed file metadata", () => {
+  it.each([
+    ["D:\\work\\a #1%.tsx", "file:///D:/work/a%20%231%25.tsx"],
+    ["/work/a b.ts", "file:///work/a%20b.ts"],
+    ["\\\\server\\share\\a.ts", "file://server/share/a.ts"],
+    ["javascript:alert(1)", undefined],
+    ["relative.ts", undefined],
+  ])("links absolute file path %s without treating it as a web URL", (path, expected) => {
+    expect(changedFileUrl(path)).toBe(expected);
+  });
+
+  it("resolves relative historical paths against the working directory", () => {
+    expect(changedFileUrl("src\\a.ts", "D:\\work")).toBe("file:///D:/work/src/a.ts");
+  });
+
   it("lists all successful file types, including removed paths", () => {
     const files: ChangedFile[] = [
       { kind: "created", path: "src\\New.tsx" },

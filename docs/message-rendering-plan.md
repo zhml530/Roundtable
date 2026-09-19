@@ -23,6 +23,7 @@ flowchart LR
 - Show parallel tool count and failed action count. Approvals stay outside the
   collapsed body; all outstanding requests remain reachable.
 - Settle to a quiet "Worked for Nm Xs" disclosure with a divider beneath it.
+  Omit zero minutes for durations under a minute (for example, "Worked for 44s").
   Use persisted timing when available and a transcript estimate for older
   history. Individual outcomes remain inside.
 - Render progress notes with Markdown. Show the latest nonempty thinking line
@@ -31,8 +32,12 @@ flowchart LR
 - Preserve persisted tool IDs, hydrated history, transcript tie ordering, and
   message navigation targets. Focus expands the containing activity.
 - Keep the final answer outside the activity. A single "Changed file" section
-  below the turn lists Added / Changed / Removed paths from successful ACP
-  tool metadata, deduplicated per turn. Hide the section when there are none.
+  inside the final answer, above its controls and without a separate divider
+  or extra top spacing, lists Added / Changed / Removed paths from successful ACP
+  metadata as filename-only hyperlinks to full file URLs (full paths on hover).
+  Deduplicate per turn. Hide the section when there are none.
+  Reveal the list only after the turn finishes, not while edits are accumulating.
+  If there is no final answer, show the list below the turn's activity instead.
   This replaces direct-chat Deliverables and title-based file inference.
   Do not scan the workspace or Git status. File types are not filtered.
 
@@ -56,5 +61,9 @@ updates. Diff blocks identify additions (null old text) and changes; delete
 tools identify removals. Edit/delete locations and explicit input paths are
 used when no diff is supplied. Reads, failed/pending tools, prose, and shell
 commands without structured diffs do not count. Paths and operations are
-persisted on the tool message, not full file contents. Old transcripts without
+persisted on the tool message, not full file contents.
+Relative paths in new ACP events are resolved against the turn's working
+directory without reading or scanning files. Legacy relative paths without a
+known working directory remain plain filenames rather than broken links.
+Old transcripts without
 this metadata remain empty; Channel artifact discovery is unchanged.

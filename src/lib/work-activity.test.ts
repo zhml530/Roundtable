@@ -4,10 +4,11 @@ import type { Message } from "@/state/store";
 
 describe("work duration", () => {
   it.each([
-    [-1, "0m 0s"],
-    [0, "0m 0s"],
-    [999, "0m 0s"],
-    [59_999, "0m 59s"],
+    [-1, "0s"],
+    [0, "0s"],
+    [999, "0s"],
+    [44_000, "44s"],
+    [59_999, "59s"],
     [60_000, "1m 0s"],
     [125_000, "2m 5s"],
   ])("formats %i milliseconds as %s", (milliseconds, expected) => {

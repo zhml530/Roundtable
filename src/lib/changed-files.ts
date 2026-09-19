@@ -4,6 +4,18 @@ import type { ChangedFile } from "../../shared/changed-files";
 
 export type { ChangedFile } from "../../shared/changed-files";
 
+export function changedFileUrl(path: string, cwd?: string): string | undefined {
+  const normalized = path.replace(/\\/g, "/");
+  const encoded = normalized.split("/").map(encodeURIComponent).join("/");
+  if (/^[a-z]:\//i.test(normalized)) {
+    return `file:///${normalized.slice(0, 2)}/${normalized.slice(3).split("/").map(encodeURIComponent).join("/")}`;
+  }
+  if (normalized.startsWith("//")) return `file:${encoded}`;
+  if (normalized.startsWith("/")) return `file://${encoded}`;
+  const base = cwd ? changedFileUrl(cwd) : undefined;
+  return base ? new URL(encoded, `${base.replace(/\/$/, "")}/`).href : undefined;
+}
+
 export function changedFilesFromMessages(messages: Message[]): ChangedFile[] {
   const byPath = new Map<string, ChangedFile>();
   for (const message of messages) {

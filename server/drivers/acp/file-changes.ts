@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { resolve } from "node:path";
 import type { ChangedFile } from "../../../shared/changed-files.ts";
 
 const metadata = z.object({
@@ -25,7 +26,7 @@ const fileInput = z.object({
 
 /** ACP updates are partial; retain metadata until the tool succeeds. Read
  * locations and proposed/failed edits must never become changed files. */
-export function createAcpFileChanges() {
+export function createAcpFileChanges(cwd?: string) {
   const tools = new Map<string, {
     kind?: string;
     status?: string;
@@ -73,6 +74,9 @@ export function createAcpFileChanges() {
         }
       }
     }
-    return [...changes.values()];
+    return [...changes.values()].map((change) => ({
+      ...change,
+      path: cwd ? resolve(cwd, change.path) : change.path,
+    }));
   };
 }

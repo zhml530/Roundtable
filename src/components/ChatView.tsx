@@ -252,6 +252,7 @@ function Bubble({
   message,
   editing,
   showToolbar = true,
+  footer,
   onCancelEdit,
   onSubmitEdit,
   replyTarget,
@@ -261,6 +262,7 @@ function Bubble({
   message: Message;
   editing: boolean;
   showToolbar?: boolean;
+  footer?: ReactNode;
   onCancelEdit: () => void;
   onSubmitEdit: (text: string) => void;
   replyTarget?: Message;
@@ -393,6 +395,7 @@ function Bubble({
               <MessageBoundary fallbackText={text}>
                 <ChatMarkdown text={text} />
               </MessageBoundary>
+              {footer}
             </>
           )}
         </div>
@@ -804,7 +807,7 @@ const MessagesList = memo(function MessagesList({
     : undefined;
   const liveTurnId = activeTurnId ?? fallbackActiveTurnId;
   let previousRenderedAt: number | undefined = showFirstDaySeparator ? undefined : messages[0]?.at;
-  const renderRow = (entry: CommandRunRow | Extract<ReturnType<typeof commandRunRows>[number], { kind: "message" }>, showToolbar = true) => {
+  const renderRow = (entry: CommandRunRow | Extract<ReturnType<typeof commandRunRows>[number], { kind: "message" }>, showToolbar = true, footer?: ReactNode) => {
     const m = entry.kind === "message" ? entry.message : entry.messages.at(-1)!;
     if (entry.kind === "command-run") {
       const active = Boolean(bot.busy && entry.turnId === liveTurnId);
@@ -850,6 +853,7 @@ const MessagesList = memo(function MessagesList({
             message={m}
             editing={editingId === m.id}
             showToolbar={showToolbar}
+            footer={footer}
             onCancelEdit={onCancelEdit}
             onSubmitEdit={(text) => onSubmitEdit(m.id, text)}
             replyTarget={m.replyToId ? bot.messages.find((candidate) => candidate.id === m.replyToId) : undefined}
@@ -897,15 +901,17 @@ const MessagesList = memo(function MessagesList({
           const activityStartIndex = lastCommandIndex >= 0
             ? entry.rows.findIndex(isActivityRow)
             : -1;
-          const toolbarIndex = bot.busy
-            ? -1
-            : entry.rows.findLastIndex(
+          const answerIndex = entry.rows.findLastIndex(
                 (turnEntry, index) =>
                   !isActivityRow(turnEntry, index) &&
                   turnEntry.kind === "message" &&
                   turnEntry.message.role === "bot" &&
                   turnEntry.message.kind === "text",
               );
+          const toolbarIndex = bot.busy ? -1 : answerIndex;
+          const delivery = !bot.busy || (liveTurnId !== undefined && entry.turnId !== liveTurnId)
+            ? <BotDelivery files={changedFiles} cwd={bot.tasks?.find((task) => task.threadId === bot.threadId)?.cwd ?? bot.cwd} />
+            : null;
           return (
             <div className="flex flex-col gap-1">
               {entry.rows.map((turnEntry, index) => {
@@ -931,12 +937,12 @@ const MessagesList = memo(function MessagesList({
                       data-mid={turnEntry.kind === "message" ? turnEntry.message.id : undefined}
                       className="contents"
                     >
-                      {renderRow(turnEntry, index === toolbarIndex)}
+                      {renderRow(turnEntry, index === toolbarIndex, index === answerIndex ? delivery : undefined)}
                     </div>
                   </Fragment>
                 );
               })}
-              <BotDelivery files={changedFiles} />
+              {answerIndex < 0 && delivery}
             </div>
           );
         })();

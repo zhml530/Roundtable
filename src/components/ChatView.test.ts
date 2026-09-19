@@ -90,7 +90,7 @@ describe("ChatView command run summary", () => {
 
   it("renders a transparent unboxed disclosure without a completed count", () => {
     const summary = renderRun([{ name: "Read file", ok: true }, { name: "Run tests", ok: true }]);
-    expect(summary).toContain("Worked for 0m 0s");
+    expect(summary).toContain("Worked for 0s");
     expect(summary).not.toContain("2 actions");
     expect(summary).toContain('aria-expanded="false"');
     expect(summary).not.toMatch(/\b\d+ completed\b/);
@@ -156,15 +156,52 @@ describe("ChatView command run summary", () => {
       { id: "again", role: "bot", kind: "activity", at: 2, turnId: "turn",
         tool: { name: "edit", ok: true }, changedFiles: [{ path: "src\\changed.ts", kind: "modified" }] },
       { id: "answer", role: "bot", kind: "text", at: 3, turnId: "turn", text: "Done." },
-    ]);
+    ], { cwd: "D:\\work" });
     expect(disclosure().getAttribute("aria-expanded")).toBe("false");
     const sections = document.querySelectorAll('section[aria-label="Changed file"]');
     expect(sections).toHaveLength(1);
     expect(sections[0].querySelectorAll("li")).toHaveLength(4);
     expect(sections[0].textContent).toContain("Added");
     expect(sections[0].textContent).toContain("Removed");
+    const link = sections[0].querySelector("a");
+    expect(link?.textContent).toBe("added.tsx");
+    expect(link?.getAttribute("href")).toBe("file:///D:/work/src/added.tsx");
+    expect(link?.getAttribute("title")).toBe("src\\added.tsx");
+    expect(document.querySelector('[data-mid="answer"]')!.contains(sections[0])).toBe(true);
+    expect(sections[0].className).not.toMatch(/\b(?:mt-|pt-|border-t)/);
     expect(document.querySelector('[data-mid="answer"]')!.compareDocumentPosition(sections[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(document.body.textContent).not.toContain("Deliverables");
+  });
+
+  it.each([true, false])("waits for turn completion before showing changed files (active ID: %s)", async (hasActiveId) => {
+    const messages: Message[] = [
+      { id: "edit", role: "bot", kind: "activity", at: 1, turnId: "turn",
+        tool: { name: "edit", ok: true }, changedFiles: [{ path: "saved.ts", kind: "modified" }] },
+    ];
+    streamMock.current = {
+      streaming: {}, reasoning: {}, activeTurns: hasActiveId ? { thread: "turn" } : {},
+      startedAt: {}, activity: {},
+    };
+    await mountMessages(messages, { busy: true });
+    expect(document.querySelector('section[aria-label="Changed file"]')).toBeNull();
+    await mountMessages(messages, { busy: false });
+    expect(document.querySelector('section[aria-label="Changed file"]')?.textContent).toContain("saved.ts");
+  });
+
+  it("keeps finished turns' changed files visible while another turn runs", () => {
+    streamMock.current = {
+      streaming: {}, reasoning: {}, activeTurns: { thread: "new-turn" },
+      startedAt: {}, activity: {},
+    };
+    const markup = renderMessages([
+      { id: "edit", role: "bot", kind: "activity", at: 1, turnId: "old-turn",
+        tool: { name: "edit", ok: true }, changedFiles: [{ path: "saved.ts", kind: "modified" }] },
+      { id: "prompt", role: "user", kind: "text", at: 2, text: "Continue." },
+      { id: "new-edit", role: "bot", kind: "activity", at: 3, turnId: "new-turn",
+        tool: { name: "edit", ok: true }, changedFiles: [{ path: "pending.ts", kind: "modified" }] },
+    ], { busy: true });
+    expect(markup).toContain("saved.ts");
+    expect(markup).not.toContain("pending.ts");
   });
 
   it("hides Changed file for old workspace artifacts, title guesses and failed edits", () => {

@@ -8,7 +8,7 @@
 // resolveCliSpawn turns it into `node <script>`, so these run everywhere.
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -226,20 +226,21 @@ describe("ACP turns (fake CLI)", () => {
 
   it("preserves ACP edit metadata through completion, including late and initially completed tools", async () => {
     await create(GrokAgentDriver, "file-changes");
-    await instance.adapter.sendTurn({ threadId: "t-files", text: "edit files" });
+    const cwd = process.cwd();
+    await instance.adapter.sendTurn({ threadId: "t-files", text: "edit files", cwd });
     await recorder.until((event) => event.type === "turn.completed");
     const completions = recorder.events.filter((event) => event.type === "item.completed" && event.itemType === "tool");
     expect(completions).toMatchObject([
       { itemId: "edit", ok: true, changedFiles: [
-        { path: "src\\added.tsx", kind: "created" },
-        { path: "src\\changed.ts", kind: "modified" },
+        { path: resolve(cwd, "src\\added.tsx"), kind: "created" },
+        { path: resolve(cwd, "src\\changed.ts"), kind: "modified" },
       ] },
       { itemId: "edit", ok: true, changedFiles: [
-        { path: "src\\added.tsx", kind: "created" },
-        { path: "src\\changed.ts", kind: "modified" },
-        { path: "pnpm-lock.yaml", kind: "modified" },
+        { path: resolve(cwd, "src\\added.tsx"), kind: "created" },
+        { path: resolve(cwd, "src\\changed.ts"), kind: "modified" },
+        { path: resolve(cwd, "pnpm-lock.yaml"), kind: "modified" },
       ] },
-      { itemId: "delete", ok: true, changedFiles: [{ path: "src\\removed.ts", kind: "deleted" }] },
+      { itemId: "delete", ok: true, changedFiles: [{ path: resolve(cwd, "src\\removed.ts"), kind: "deleted" }] },
       { itemId: "failed", ok: false, changedFiles: undefined },
     ]);
   });

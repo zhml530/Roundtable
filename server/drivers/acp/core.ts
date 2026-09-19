@@ -454,7 +454,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           });
         };
 
-        const trackFileChanges = createAcpFileChanges();
+        const trackFileChanges = createAcpFileChanges(cwd);
         const handleNotification = (msg: any) => {
           // Vendor side-channels (e.g. grok's `_x.ai/*`) are teed to the
           // native log but never normalized: the prompt result is the settle.
