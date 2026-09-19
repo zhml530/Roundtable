@@ -87,7 +87,7 @@ export interface Message {
   /** activity messages: tool name + outcome. `spoken` is the server's
    * narration of the same chip ("reading a file"), used by call mode. */
   /** `setup` marks an error fixed by installing something, not by retrying. */
-  tool?: { name: string; ok?: boolean; spoken?: string; setup?: boolean };
+  tool?: { name: string; ok?: boolean; spoken?: string; setup?: boolean; itemId?: string };
   /** user messages sent into a running turn — the model saw it mid-turn */
   steered?: boolean;
   /** screen messages: a frame of the bot's computer (base64) */
@@ -1191,6 +1191,10 @@ export async function api(path: string, init?: RequestInit): Promise<any> {
  * the components that read this hook (the chat's streaming tail), while every
  * useStore consumer — sidebar, avatars, pickers, the settled transcript —
  * keeps its render tree untouched during a stream. */
+export type LiveActivitySegment =
+  | { kind: "reasoning"; text: string; at: number }
+  | { kind: "tool"; itemId: string; title: string; status: "running" | "completed" | "failed"; at: number };
+
 interface StreamState {
   /** in-flight assistant text per threadId */
   streaming: Record<string, string>;
@@ -1198,8 +1202,12 @@ interface StreamState {
   reasoning: Record<string, string>;
   /** Provider turn currently producing runtime rows for each thread. */
   activeTurns: Record<string, string>;
+  /** Runtime start time for the live turn-level elapsed indicator. */
+  startedAt: Record<string, number>;
+  /** Ordered, ephemeral reasoning/tool phases for the active provider turn. */
+  activity: Record<string, LiveActivitySegment[]>;
 }
-const EMPTY_STREAM: StreamState = { streaming: {}, reasoning: {}, activeTurns: {} };
+const EMPTY_STREAM: StreamState = { streaming: {}, reasoning: {}, activeTurns: {}, startedAt: {}, activity: {} };
 const StreamContext = createContext<StreamState>(EMPTY_STREAM);
 
 export function useStreaming() {
@@ -1225,7 +1233,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // state is intentionally OUTSIDE the reducer so token frames re-render
   // only StreamContext consumers
   const [stream, setStream] = useState<StreamState>(EMPTY_STREAM);
-  const deltaBuffer = useRef(new Map<string, { text: string; reasoning: string }>());
+  const deltaBuffer = useRef(new Map<string, { text: string; reasoning: string; reasoningAt?: number }>());
   const deltaFlush = useRef<number | null>(null);
   const messagePageRequests = useRef(new Map<string, Promise<void>>());
   const clearStream = (threadId: string, clearTurn = false) => {
@@ -1238,12 +1246,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     // duplicated tail instead of starting a fresh bubble.
     deltaBuffer.current.delete(threadId);
     setStream((prev) => {
-      if (!(threadId in prev.streaming) && !(threadId in prev.reasoning) && (!clearTurn || !(threadId in prev.activeTurns))) return prev;
+      if (
+        !(threadId in prev.streaming) &&
+        !(threadId in prev.reasoning) &&
+        (!clearTurn || (!(threadId in prev.activeTurns) && !(threadId in prev.startedAt) && !(threadId in prev.activity)))
+      ) return prev;
       const { [threadId]: _s, ...streaming } = prev.streaming;
       const { [threadId]: _r, ...reasoning } = prev.reasoning;
       const { [threadId]: _activeTurn, ...remainingActiveTurns } = prev.activeTurns;
+      const { [threadId]: _startedAt, ...remainingStartedAt } = prev.startedAt;
+      const { [threadId]: _activity, ...remainingActivity } = prev.activity;
       const activeTurns = clearTurn ? remainingActiveTurns : prev.activeTurns;
-      return { streaming, reasoning, activeTurns };
+      const startedAt = clearTurn ? remainingStartedAt : prev.startedAt;
+      const activity = clearTurn ? remainingActivity : prev.activity;
+      return { streaming, reasoning, activeTurns, startedAt, activity };
     });
   };
   const flushDeltas = () => {
@@ -1258,11 +1274,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setStream((prev) => {
       const streaming = { ...prev.streaming };
       const reasoning = { ...prev.reasoning };
+      const activity = { ...prev.activity };
       for (const [threadId, d] of entries) {
         if (d.text) streaming[threadId] = (streaming[threadId] ?? "") + d.text;
-        if (d.reasoning) reasoning[threadId] = (reasoning[threadId] ?? "") + d.reasoning;
+        if (d.reasoning) {
+          reasoning[threadId] = (reasoning[threadId] ?? "") + d.reasoning;
+          const segments = [...(activity[threadId] ?? [])];
+          const last = segments.at(-1);
+          if (last?.kind === "reasoning") segments[segments.length - 1] = { ...last, text: last.text + d.reasoning };
+          else segments.push({ kind: "reasoning", text: d.reasoning, at: d.reasoningAt ?? Date.now() });
+          activity[threadId] = segments;
+        }
       }
-      return { ...prev, streaming, reasoning };
+      return { ...prev, streaming, reasoning, activity };
     });
   };
 
@@ -1778,7 +1802,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "thread":
           rawDispatch({ type: "threadActive", threadId: frame.threadId, activeLeafId: frame.activeLeafId });
           // a rewind also invalidates any half-streamed text from the old branch
-          clearStream(frame.threadId);
+          clearStream(frame.threadId, true);
           break;
         case "bot": {
           const announced: BotAnnouncement & { hasMore?: boolean } = frame.bot;
@@ -1871,7 +1895,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             const buf = deltaBuffer.current;
             const entry = buf.get(event.threadId) ?? { text: "", reasoning: "" };
             if (event.streamKind === "assistant_text") entry.text += event.delta;
-            else if (event.streamKind === "reasoning_text") entry.reasoning += event.delta;
+            else if (event.streamKind === "reasoning_text") {
+              entry.reasoning += event.delta;
+              entry.reasoningAt ??= Date.parse(event.createdAt) || Date.now();
+            }
             buf.set(event.threadId, entry);
             if (deltaFlush.current === null) {
               deltaFlush.current = requestAnimationFrame(() => {
@@ -1883,13 +1910,61 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             // flush any buffered tail before clearing so no tokens are lost
             flushDeltas();
             clearStream(event.threadId, true);
+          } else if (event.type === "item.started" && event.itemType === "tool") {
+            // A tool boundary closes the current reasoning phase before the
+            // tool row is appended, preserving thinking -> tool -> thinking.
+            flushDeltas();
+            setStream((prev) => ({
+              ...prev,
+              activeTurns: event.turnId
+                ? { ...prev.activeTurns, [event.threadId]: event.turnId }
+                : prev.activeTurns,
+              startedAt: event.threadId in prev.startedAt
+                ? prev.startedAt
+                : { ...prev.startedAt, [event.threadId]: Date.parse(event.createdAt) || Date.now() },
+              activity: {
+                ...prev.activity,
+                [event.threadId]: [
+                  ...(prev.activity[event.threadId] ?? []),
+                  {
+                    kind: "tool",
+                    itemId: event.itemId ?? event.eventId,
+                    title: event.title ?? "tool",
+                    status: "running",
+                    at: Date.parse(event.createdAt) || Date.now(),
+                  },
+                ],
+              },
+            }));
+          } else if (event.type === "item.completed" && event.itemType === "tool") {
+            flushDeltas();
+            const itemId = event.itemId;
+            if (itemId) {
+              setStream((prev) => ({
+                ...prev,
+                activity: {
+                  ...prev.activity,
+                  [event.threadId]: (prev.activity[event.threadId] ?? []).map((segment) =>
+                    segment.kind === "tool" && segment.itemId === itemId
+                      ? { ...segment, status: event.ok ? "completed" : "failed" }
+                      : segment),
+                },
+              }));
+            }
           } else if (
             event.turnId &&
             (event.type === "turn.started" || event.type === "item.started" || event.type === "request.opened")
           ) {
-            setStream((prev) => prev.activeTurns[event.threadId] === event.turnId
-              ? prev
-              : { ...prev, activeTurns: { ...prev.activeTurns, [event.threadId]: event.turnId } });
+            setStream((prev) => {
+              if (prev.activeTurns[event.threadId] === event.turnId && event.threadId in prev.startedAt) return prev;
+              return {
+                ...prev,
+                activeTurns: { ...prev.activeTurns, [event.threadId]: event.turnId },
+                startedAt: event.threadId in prev.startedAt
+                  ? prev.startedAt
+                  : { ...prev.startedAt, [event.threadId]: Date.parse(event.createdAt) || Date.now() },
+              };
+            });
           }
           break;
         }
