@@ -465,7 +465,20 @@ function handle(msg: any) {
           });
         return;
       }
-      if (mode === "interleave") playInterleaveTurn();
+      if (mode === "file-changes") {
+        const update = (value: object) => out({ jsonrpc: "2.0", method: "session/update", params: { update: value } });
+        update({ sessionUpdate: "tool_call", toolCallId: "edit", title: "apply_patch", kind: "edit", locations: [{ path: "src\\changed.ts" }] });
+        update({ sessionUpdate: "tool_call_update", toolCallId: "edit", content: [
+          { type: "diff", path: "src\\added.tsx", oldText: null, newText: "new file" },
+        ] });
+        update({ sessionUpdate: "tool_call_update", toolCallId: "edit", status: "completed" });
+        update({ sessionUpdate: "tool_call_update", toolCallId: "edit", locations: [{ path: "pnpm-lock.yaml" }] });
+        update({ sessionUpdate: "tool_call", toolCallId: "delete", title: "delete", kind: "delete", status: "completed", locations: [{ path: "src\\removed.ts" }] });
+        update({ sessionUpdate: "tool_call", toolCallId: "failed", title: "edit", kind: "edit", locations: [{ path: "failed.ts" }] });
+        update({ sessionUpdate: "tool_call_update", toolCallId: "failed", status: "failed" });
+        update({ sessionUpdate: "agent_message_chunk", content: { text: "Changed files." } });
+      }
+      else if (mode === "interleave") playInterleaveTurn();
       else if (mode !== "empty-reply") playTurn();
       if (mode === "permission") {
         // ask the client to approve a tool, then complete once answered

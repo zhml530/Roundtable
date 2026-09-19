@@ -15,6 +15,7 @@ import {
 } from "react";
 import type { CloudBackend, EffortLevel } from "../../server/contracts.ts";
 import type { AgentColor } from "../../shared/agent-avatar";
+import type { ChangedFile } from "../../shared/changed-files";
 import type { BotAvatarCrop } from "../../shared/bot-avatar";
 import type { CoordinatorAvatarCrop } from "../../shared/bot-avatar";
 import type { Routine, RoutineInput, RoutineRun } from "@/lib/routines";
@@ -75,9 +76,12 @@ export interface Message {
   executionReport?: string;
   coordinationRunId?: string;
   artifacts?: Array<{ label: string; path: string; threadId: string }>;
+  changedFiles?: ChangedFile[];
   id: string;
   /** Provider turn that produced this runtime projection. */
   turnId?: string;
+  turnStartedAt?: number;
+  turnDurationMs?: number;
   role: "bot" | "user";
   kind: "text" | "options" | "activity" | "screen" | "connector" | "secret";
   text?: string;

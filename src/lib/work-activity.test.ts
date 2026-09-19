@@ -1,5 +1,37 @@
 import { describe, expect, it } from "vitest";
-import { mergeWorkActivity } from "./work-activity";
+import { formatWorkDuration, mergeWorkActivity, workDuration } from "./work-activity";
+import type { Message } from "@/state/store";
+
+describe("work duration", () => {
+  it.each([
+    [-1, "0m 0s"],
+    [0, "0m 0s"],
+    [999, "0m 0s"],
+    [59_999, "0m 59s"],
+    [60_000, "1m 0s"],
+    [125_000, "2m 5s"],
+  ])("formats %i milliseconds as %s", (milliseconds, expected) => {
+    expect(formatWorkDuration(milliseconds)).toBe(expected);
+  });
+
+  const prompt: Message = { id: "prompt", role: "user", kind: "text", at: 1_000 };
+  const tool: Message = { id: "tool", role: "bot", kind: "activity", at: 11_000 };
+  const answer: Message = { id: "answer", role: "bot", kind: "text", at: 66_000 };
+  it("uses saved duration rather than transcript estimates", () => {
+    expect(workDuration([tool, { ...answer, turnDurationMs: 70_000 }], [prompt, tool, answer])).toBe(70_000);
+  });
+  it("estimates old turns from the adjacent user prompt through the answer", () => {
+    expect(workDuration([tool, answer], [prompt, tool, answer])).toBe(65_000);
+  });
+  it("prefers a recorded start and handles paginated history without a prompt", () => {
+    expect(workDuration([{ ...tool, turnStartedAt: 6_000 }, answer], [prompt, tool, answer])).toBe(60_000);
+    expect(workDuration([tool, answer], [tool, answer])).toBe(55_000);
+  });
+  it("does not include a previous bot turn or return negative elapsed time", () => {
+    expect(workDuration([tool, answer], [{ ...prompt, role: "bot" }, tool, answer])).toBe(55_000);
+    expect(workDuration([tool, { ...answer, at: 0 }], [tool, answer])).toBe(0);
+  });
+});
 
 describe("work activity merge", () => {
   it("keeps unprojected tools and reasoning in live event order around transcript anchors", () => {

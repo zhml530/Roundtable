@@ -224,6 +224,26 @@ describe("ACP turns (fake CLI)", () => {
     expect(instance.adapter.hasSession("t-happy")).toBe(false);
   });
 
+  it("preserves ACP edit metadata through completion, including late and initially completed tools", async () => {
+    await create(GrokAgentDriver, "file-changes");
+    await instance.adapter.sendTurn({ threadId: "t-files", text: "edit files" });
+    await recorder.until((event) => event.type === "turn.completed");
+    const completions = recorder.events.filter((event) => event.type === "item.completed" && event.itemType === "tool");
+    expect(completions).toMatchObject([
+      { itemId: "edit", ok: true, changedFiles: [
+        { path: "src\\added.tsx", kind: "created" },
+        { path: "src\\changed.ts", kind: "modified" },
+      ] },
+      { itemId: "edit", ok: true, changedFiles: [
+        { path: "src\\added.tsx", kind: "created" },
+        { path: "src\\changed.ts", kind: "modified" },
+        { path: "pnpm-lock.yaml", kind: "modified" },
+      ] },
+      { itemId: "delete", ok: true, changedFiles: [{ path: "src\\removed.ts", kind: "deleted" }] },
+      { itemId: "failed", ok: false, changedFiles: undefined },
+    ]);
+  });
+
   it("emits each assistant text block before the tool that follows it", async () => {
     await create(GrokAgentDriver, "interleave");
     await instance.adapter.sendTurn({ threadId: "t-interleave", text: "go", model: "grok-4.5" });

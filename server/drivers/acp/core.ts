@@ -50,6 +50,7 @@ import { augmentedPath } from "../../env-path.ts";
 const COMPUTER_PROXY_PATH = SPAWNED_PROXIES.computer;
 import { appendNative } from "../native.ts";
 import { SPAWNED_PROXIES } from "../../proxy-paths.ts";
+import { createAcpFileChanges } from "./file-changes.ts";
 
 interface AcpToolUpdate {
   title?: string | null;
@@ -404,6 +405,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             });
 
           const toolCall = params.toolCall ?? {};
+          if (toolCall.toolCallId) trackFileChanges(toolCall);
           if (config.fullAuto) {
             const allow = optionFor("allow");
             if (!allow) missing("allow");
@@ -452,6 +454,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           });
         };
 
+        const trackFileChanges = createAcpFileChanges();
         const handleNotification = (msg: any) => {
           // Vendor side-channels (e.g. grok's `_x.ai/*`) are teed to the
           // native log but never normalized: the prompt result is the settle.
@@ -484,16 +487,25 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                 itemId: u.toolCallId,
                 title: acpToolTitle(u).slice(0, 240),
               });
+              const changedFiles = trackFileChanges(u);
+              if (u.status === "completed" || u.status === "failed") {
+                emit({
+                  ...base(threadId, turnId), type: "item.completed", itemType: "tool",
+                  itemId: u.toolCallId, ok: u.status === "completed", changedFiles,
+                });
+              }
               break;
             }
             case "tool_call_update": {
-              if (u.status === "completed" || u.status === "failed") {
+              const changedFiles = trackFileChanges(u);
+              if (u.status === "completed" || u.status === "failed" || changedFiles?.length) {
                 emit({
                   ...base(threadId, turnId),
                   type: "item.completed",
                   itemType: "tool",
                   itemId: u.toolCallId,
                   ok: u.status !== "failed",
+                  changedFiles,
                 });
               }
               break;

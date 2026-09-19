@@ -52,6 +52,19 @@ describe("readThreadEvents", () => {
     expect(page.entries[0]).toMatchObject({ kind: "runtime", data: { eventId: "e1" } });
   });
 
+  it("retains valid changed-file metadata and rejects invalid operation types", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    const completion = { type: "item.completed", itemType: "tool", ok: true, createdAt: "2026-08-17T10:00:00.000Z" };
+    writeFileSync(join(eventsDir, "t1.ndjson"),
+      line(runtime({ ...completion, eventId: "valid", changedFiles: [{ path: "new.ts", kind: "created" }] })) +
+      line(runtime({ ...completion, eventId: "invalid", changedFiles: [{ path: "read.ts", kind: "read" }] })),
+    );
+    const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1" });
+    expect(page.entries).toHaveLength(1);
+    expect(page.entries[0]).toMatchObject({ data: { eventId: "valid", changedFiles: [{ path: "new.ts", kind: "created" }] } });
+  });
+
   it("caps each log to its most recent `limit` lines and reports what it skipped", () => {
     const eventsDir = tmp();
     const nativeDir = tmp();

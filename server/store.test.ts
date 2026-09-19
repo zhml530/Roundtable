@@ -29,6 +29,26 @@ describe("Store", () => {
     expect(bot.modelSelection).toEqual(selection());
   });
 
+  it("persists reported changed files with the completed tool message", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    const tool = store.appendMessage(bot.threadId, {
+      role: "bot", kind: "activity", turnId: "turn",
+      tool: { name: "apply_patch", itemId: "tool" },
+    });
+    const changedFiles = [
+      { path: "src\\new.tsx", kind: "created" as const },
+      { path: "src\\old.ts", kind: "deleted" as const },
+    ];
+    store.patchMessage(bot.threadId, tool.id, {
+      tool: { name: "apply_patch", itemId: "tool", ok: true }, changedFiles,
+    });
+    const reloaded = new Store(selection);
+    expect(reloaded.messagesFor(bot.threadId).find((message) => message.id === tool.id)).toMatchObject({
+      turnId: "turn", tool: { itemId: "tool", ok: true }, changedFiles,
+    });
+  });
+
   it("dismisses the onboarding quiz when the user talks, and leaves live asks", () => {
     const store = new Store(selection);
     const bot = store.createBot();

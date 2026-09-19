@@ -1,47 +1,36 @@
 import { describe, expect, it } from "vitest";
 import type { Message } from "@/state/store";
-import { changedFileFromToolName, changedFilesFromMessages } from "./changed-files";
+import { changedFilesFromMessages, type ChangedFile } from "./changed-files";
 
-const activity = (id: string, name: string, ok: boolean | undefined = true): Message => ({
-  id,
-  at: Number(id),
-  role: "bot",
-  kind: "activity",
-  tool: { name, ok },
+const activity = (id: string, changedFiles: ChangedFile[], ok: boolean | undefined = true): Message => ({
+  id, at: Number(id), role: "bot", kind: "activity",
+  tool: { name: "apply_patch", ok }, changedFiles,
 });
 
-describe("changed file extraction", () => {
-  it("extracts explicit created, modified, and deleted file titles", () => {
-    expect(changedFileFromToolName("Created D:\\work\\Roundtable\\src\\New.tsx")).toEqual({
-      kind: "created",
-      path: "D:\\work\\Roundtable\\src\\New.tsx",
-    });
-    expect(changedFileFromToolName("Update file src\\components\\ChatView.tsx")).toEqual({
-      kind: "modified",
-      path: "src\\components\\ChatView.tsx",
-    });
-    expect(changedFileFromToolName("Deleted file 'src\\old.ts'")).toEqual({
-      kind: "deleted",
-      path: "src\\old.ts",
-    });
-  });
-
-  it("ignores generic edit tools and read-only tool titles", () => {
-    expect(changedFileFromToolName("apply_patch")).toBeNull();
-    expect(changedFileFromToolName("auto-approved edit: Update file")).toBeNull();
-    expect(changedFileFromToolName("Viewing D:\\work\\Roundtable\\src\\components\\ChatView.tsx")).toBeNull();
-    expect(changedFileFromToolName("Searching for 'Changed files'")).toBeNull();
-  });
-
-  it("deduplicates paths and preserves meaningful change type", () => {
-    expect(changedFilesFromMessages([
-      activity("1", "Created src\\New.tsx"),
-      activity("2", "Modified src\\New.tsx"),
-      activity("3", "Deleted src\\Old.tsx"),
-      activity("4", "Modified src\\Skipped.tsx", false),
-    ])).toEqual([
+describe("changed file metadata", () => {
+  it("lists all successful file types, including removed paths", () => {
+    const files: ChangedFile[] = [
       { kind: "created", path: "src\\New.tsx" },
-      { kind: "deleted", path: "src\\Old.tsx" },
-    ]);
+      { kind: "modified", path: "package.json" },
+      { kind: "modified", path: "pnpm-lock.yaml" },
+      { kind: "deleted", path: "src\\Old.ts" },
+    ];
+    expect(changedFilesFromMessages([activity("1", files)])).toEqual(files);
+  });
+
+  it("does not infer changes from titles, artifacts, or unfinished and failed edits", () => {
+    expect(changedFilesFromMessages([
+      { ...activity("1", []), tool: { name: "Created src\\Guess.ts", ok: true } },
+      { ...activity("2", [{ kind: "modified", path: "pending.ts" }]), tool: { name: "edit" } },
+      activity("3", [{ kind: "modified", path: "failed.ts" }], false),
+      { id: "4", at: 4, role: "bot", kind: "text", artifacts: [{ path: "doc.md", label: "doc.md", threadId: "t" }] },
+    ])).toEqual([]);
+  });
+
+  it("deduplicates repeated edits and reflects the final reported operation", () => {
+    expect(changedFilesFromMessages([
+      activity("1", [{ kind: "created", path: "new.ts" }, { kind: "deleted", path: "old.ts" }]),
+      activity("2", [{ kind: "modified", path: "new.ts" }, { kind: "created", path: "old.ts" }]),
+    ])).toEqual([{ kind: "created", path: "new.ts" }, { kind: "created", path: "old.ts" }]);
   });
 });

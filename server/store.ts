@@ -15,6 +15,7 @@ import { pickBotName } from "./names.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { botAvatarProfile, type BotAvatarCrop } from "../shared/bot-avatar.ts";
 import { agentColorForName, type AgentColor } from "../shared/agent-avatar.ts";
+import type { ChangedFile } from "../shared/changed-files.ts";
 
 export type { AgentColor } from "../shared/agent-avatar.ts";
 
@@ -70,10 +71,14 @@ export interface Message {
   executionReport?: string;
   coordinationRunId?: string;
   artifacts?: Array<{ label: string; path: string; threadId: string }>;
+  changedFiles?: ChangedFile[];
   id: string;
   /** Provider turn that produced this runtime projection. Used by the
    * direct-chat UI to collapse tool activity without guessing boundaries. */
   turnId?: string;
+  /** Runtime wall-clock timing, retained with the transcript. */
+  turnStartedAt?: number;
+  turnDurationMs?: number;
   role: "bot" | "user";
   kind: "text" | "options" | "activity" | "screen" | "connector" | "secret";
   text?: string;

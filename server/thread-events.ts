@@ -14,6 +14,13 @@
 import { closeSync, fstatSync, openSync, readSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import type { RuntimeEvent } from "./contracts.ts";
+import { z } from "zod";
+import type { ChangedFile } from "../shared/changed-files.ts";
+
+const changedFilesSchema: z.ZodType<ChangedFile[]> = z.array(z.object({
+  path: z.string().min(1),
+  kind: z.enum(["created", "modified", "deleted"]),
+}));
 
 /** One line of native/<threadId>.ndjson (server/drivers/native.ts). */
 export interface NativeRecord {
@@ -204,7 +211,10 @@ function isRuntimeEvent(value: unknown): value is RuntimeEvent {
     case "item.updated":
       return (value.itemType === "tool" || value.itemType === "reasoning") && numberOrNullOrMissing(value.tokens);
     case "item.completed":
-      return value.itemType === "assistant_text" ? typeof value.text === "string" : value.itemType === "tool" && typeof value.ok === "boolean";
+      return value.itemType === "assistant_text" ? typeof value.text === "string" : (
+        value.itemType === "tool" && typeof value.ok === "boolean" &&
+        (value.changedFiles === undefined || changedFilesSchema.safeParse(value.changedFiles).success)
+      );
     case "content.delta":
       return (value.streamKind === "assistant_text" || value.streamKind === "reasoning_text") && typeof value.delta === "string";
     case "request.opened":

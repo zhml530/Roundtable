@@ -641,6 +641,7 @@ const lastReply = new Map<string, string>();
 // attached only after the provider settles, never inferred from a streaming
 // fragment that may be superseded by a later assistant message.
 const lastReplyMessageId = new Map<string, string>();
+const turnStartTimes = new Map<string, { turnId?: string; at: number }>();
 // Conversation titles have their own routing seam even though the MVP uses
 // the Coordinator Backup selection. A future dedicated title model changes
 // only this resolver, not task/title semantics or the provider call path.
@@ -704,10 +705,6 @@ function generateTitleAfterFirstUserMessage(botId: string, threadId: string, fir
     // Best-effort metadata must never affect the completed Agent turn.
     .catch(() => {});
 }
-// A Task can reuse a workspace across many turns. This lower bound keeps a
-// delivery focused on this turn's output, while collectChannelArtifacts still
-// permits an older file when the Bot explicitly named it in its final answer.
-const taskArtifactSince = new Map<string, number>();
 
 /** Put a notification on the wire. Clients decide what to do with it — a
  * desktop notification now, a push to a paired phone later. */
@@ -838,12 +835,18 @@ bus.subscribe((event: RuntimeEvent) => {
   const speaker = group ? groupSpeakers.get(event.threadId) : undefined;
 
   const pushMessage = (m: Omit<Message, "id" | "at">) => {
-    const projected = event.turnId && m.role === "bot" ? { ...m, turnId: event.turnId } : m;
+    const timing = turnStartTimes.get(event.threadId);
+    const projected = event.turnId && m.role === "bot"
+      ? { ...m, turnId: event.turnId, turnStartedAt: timing?.turnId === event.turnId ? timing.at : undefined }
+      : m;
     const message = store.appendMessage(event.threadId, group && projected.role === "bot" ? { ...projected, from: speaker } : projected);
     return message;
   };
 
   switch (event.type) {
+    case "turn.started":
+      turnStartTimes.set(event.threadId, { turnId: event.turnId, at: Date.parse(event.createdAt) || Date.now() });
+      break;
     case "session.started":
       if (bot && event.sessionId && event.providerInstanceId) {
         store.setResumeCursor(bot.id, event.providerInstanceId, event.sessionId, event.threadId);
@@ -858,16 +861,20 @@ bus.subscribe((event: RuntimeEvent) => {
         lastReplyMessageId.set(event.threadId, message.id);
       } else if (event.itemType === "tool" && event.itemId) {
         const itemKey = `${event.threadId}:${event.itemId}`;
-        const messageId = toolMessageByItem.get(itemKey);
+        const messageId = toolMessageByItem.get(itemKey)
+          ?? store.messagesFor(event.threadId).find((message) =>
+            message.turnId === event.turnId && message.tool?.itemId === event.itemId)?.id;
         let toolName = "tool";
         if (messageId) {
           // the whole tool object is replaced, so carry `spoken` across —
           // dropping it here would silently un-narrate every completed tool
           const existing = store.messagesFor(event.threadId).find((m) => m.id === messageId)?.tool;
           toolName = existing?.name ?? "tool";
-          store.patchMessage(event.threadId, messageId, {
+          const patch: Partial<Message> = {
             tool: { ...existing, name: toolName, ok: event.ok },
-          });
+          };
+          if (event.ok && event.changedFiles !== undefined) patch.changedFiles = event.changedFiles;
+          store.patchMessage(event.threadId, messageId, patch);
           toolMessageByItem.delete(itemKey);
         }
         // the bot just acted ON ITS SCREEN — refresh the preview now. Only
@@ -1070,30 +1077,26 @@ bus.subscribe((event: RuntimeEvent) => {
       turnUsage.set(event.threadId, { input: event.input, output: event.output });
       break;
     case "turn.completed": {
+      const turnMessages = store.messagesFor(event.threadId).filter((message) =>
+        message.role === "bot" && message.turnId === event.turnId);
+      const timing = turnStartTimes.get(event.threadId);
+      const startedAt = timing?.turnId === event.turnId ? timing?.at : turnMessages.find((message) => message.turnStartedAt !== undefined)?.turnStartedAt;
+      const lastTurnMessage = turnMessages.at(-1);
+      if (startedAt !== undefined && lastTurnMessage) {
+        store.patchMessage(event.threadId, lastTurnMessage.id, {
+          turnDurationMs: Math.max(0, (Date.parse(event.createdAt) || Date.now()) - startedAt),
+        });
+      }
+      if (timing?.turnId === event.turnId) turnStartTimes.delete(event.threadId);
       const reply = lastReply.get(event.threadId) ?? "";
       lastReply.delete(event.threadId);
-      const replyMessageId = lastReplyMessageId.get(event.threadId);
       lastReplyMessageId.delete(event.threadId);
-      const artifactSince = taskArtifactSince.get(event.threadId);
-      taskArtifactSince.delete(event.threadId);
       const lastReported = turnUsage.get(event.threadId);
       turnUsage.delete(event.threadId);
       // group turns run on the room's thread — the speaking bot's task
       // tally is not the right home for a shared room's spend, so only
       // 1:1 task turns are tallied for now.
       if (bot) {
-        // Direct Bot deliveries get the same artifact discipline as Channel
-        // synthesis: discover only inside this Task's pinned workspace, then
-        // publish the resulting records onto the final assistant message.
-        // The client can later read only these published records.
-        const task = store.taskByThread(bot.id, event.threadId);
-        if (event.ok && replyMessageId && artifactSince && task?.cwd) {
-          const artifacts = collectChannelArtifacts(
-            [{ threadId: event.threadId, cwd: task.cwd, output: reply }],
-            artifactSince,
-          );
-          if (artifacts.length) store.patchMessage(event.threadId, replyMessageId, { artifacts });
-        }
         // bank what this turn spent before the bot broadcast carries the
         // task list to every window. The driver's own per-turn figure
         // (turn.completed.usage) is authoritative; a driver that only
@@ -1544,7 +1547,6 @@ async function startTurn(
   store.setActivity(bot.id, "working");
   store.patchBot(bot.id, { unread: false });
   turnUsage.delete(threadId);
-  taskArtifactSince.set(threadId, Date.now());
 
   void (async () => {
     try {
@@ -1733,7 +1735,6 @@ async function startTurn(
     } catch (e) {
       watchdog.settle(threadId);
       turnUsage.delete(threadId);
-      taskArtifactSince.delete(threadId);
       lastReplyMessageId.delete(threadId);
       const message = e instanceof Error ? e.message : String(e);
       store.appendMessage(threadId, {

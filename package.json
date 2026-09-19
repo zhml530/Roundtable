@@ -80,6 +80,7 @@
     "electron-builder": "^26.15.3",
     "electron-updater": "^6.8.9",
     "esbuild": "^0.28.2",
+    "happy-dom": "^20.0.0",
     "oxlint": "1.78.0",
     "tailwindcss": "^4.1.11",
     "typescript": "^5.8.3",

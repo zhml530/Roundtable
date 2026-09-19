@@ -4,6 +4,7 @@
 // de-Effect-ed: Promises instead of Effect, listener callbacks instead of
 // Stream. The shapes and names are kept so the two codebases stay mutually
 // readable.
+import type { ChangedFile } from "../shared/changed-files.ts";
 
 export type DriverKind = string;
 export type InstanceId = string;
@@ -108,7 +109,7 @@ export type RuntimeEvent = RuntimeEventBase &
       }
     | { type: "item.started"; itemType: "tool" | "reasoning"; title?: string }
     | { type: "item.updated"; itemType: "tool" | "reasoning"; tokens?: number | null }
-    | { type: "item.completed"; itemType: "tool"; ok: boolean }
+    | { type: "item.completed"; itemType: "tool"; ok: boolean; changedFiles?: ChangedFile[] }
     | { type: "item.completed"; itemType: "assistant_text"; text: string }
     | { type: "content.delta"; streamKind: "assistant_text" | "reasoning_text"; delta: string }
     | {
@@ -337,4 +338,3 @@ export type AnyProviderDriver = ProviderDriver<any>;
 let eventCounter = 0;
 export const newEventId = () => `ev-${Date.now().toString(36)}-${(eventCounter++).toString(36)}`;
 export const newId = () => crypto.randomUUID();
-

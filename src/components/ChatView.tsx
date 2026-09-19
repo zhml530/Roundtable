@@ -1,4 +1,4 @@
-import { Component, Fragment, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Component, Fragment, memo, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   AlertTriangle,
   Brain,
@@ -8,7 +8,6 @@ import {
   ChevronRight,
   Clock,
   CircleUserRound,
-  FilePenLine,
   Loader2,
   MessageSquareReply,
   Pin,
@@ -52,8 +51,8 @@ import { cn } from "@/lib/cn";
 import { useFocusMessage } from "@/lib/focus-message";
 import { webhookMessageView } from "@/lib/webhook-message";
 import { splitAttachedImages } from "@/lib/composer-attachments";
-import { changedFilesFromTurnRows, type ChangedFile } from "@/lib/changed-files";
-import { mergeWorkActivity } from "@/lib/work-activity";
+import { changedFilesFromTurnRows } from "@/lib/changed-files";
+import { formatWorkDuration, mergeWorkActivity, workDuration } from "@/lib/work-activity";
 import {
   commandRunCounts,
   commandRunRows,
@@ -394,7 +393,6 @@ function Bubble({
               <MessageBoundary fallbackText={text}>
                 <ChatMarkdown text={text} />
               </MessageBoundary>
-              <BotDelivery botId={bot.id} message={message} />
             </>
           )}
         </div>
@@ -505,7 +503,11 @@ function ProgressNote({ message }: { message: Message }) {
       <Brain size={14} className="mt-0.5 text-ink-secondary" aria-hidden="true" />
       <div className="min-w-0">
         <div className="mb-0.5 text-[11px] font-medium uppercase tracking-[0.12em] text-ink-secondary">Progress note</div>
-        <div className="whitespace-pre-wrap break-words text-[12.5px] leading-relaxed text-ink-secondary">{message.text}</div>
+        <div className="break-words text-[12.5px] leading-relaxed text-ink-secondary">
+          <MessageBoundary fallbackText={message.text ?? ""}>
+            <ChatMarkdown text={message.text ?? ""} />
+          </MessageBoundary>
+        </div>
       </div>
     </div>
   );
@@ -515,7 +517,7 @@ function WorkToolMessage({ message }: { message: Message }) {
   return (
     <div className="grid grid-cols-[18px_minmax(0,1fr)_auto] items-start gap-2 px-3 py-2.5" data-mid={message.id}>
       {message.kind === "options" ? (
-        <ShieldCheck size={14} className="mt-0.5 text-ink-secondary" aria-hidden="true" />
+        <ShieldCheck size={14} className={cn("mt-0.5", message.card?.answered === "deny" ? "text-danger" : "text-ink-secondary")} aria-hidden="true" />
       ) : message.tool?.ok === false ? (
         <X size={14} className="mt-0.5 text-danger" aria-hidden="true" />
       ) : message.tool?.ok === undefined ? (
@@ -543,6 +545,8 @@ function WorkActivity({
   reasoning,
   liveActivity,
   since,
+  drafting = false,
+  durationMs,
   focusedMessageId,
 }: {
   bot: Bot;
@@ -551,11 +555,14 @@ function WorkActivity({
   reasoning?: string;
   liveActivity?: LiveActivitySegment[];
   since?: number;
+  drafting?: boolean;
+  durationMs?: number;
   focusedMessageId?: string;
 }) {
+  const detailsId = useId();
   const messages = rows.flatMap((row) => row.kind === "command-run" ? row.messages : []);
   const counts = commandRunCounts(messages);
-  const pendingApproval = messages.find(
+  const pendingApprovals = messages.filter(
     (message) =>
       message.kind === "options" &&
       message.card?.requestId &&
@@ -563,20 +570,21 @@ function WorkActivity({
       !message.card.answered &&
       !message.card.dismissed,
   );
+  const pendingApproval = pendingApprovals[0];
   const containsFocus = Boolean(focusedMessageId && rows.some((row) =>
     row.kind === "message"
       ? row.message.id === focusedMessageId
       : row.messages.some((message) => message.id === focusedMessageId)));
-  const [open, setOpen] = useState(active || Boolean(pendingApproval) || containsFocus);
+  const [open, setOpen] = useState(containsFocus);
   const liveSegments = active && liveActivity?.length
     ? mergeWorkActivity(rows, liveActivity)
     : undefined;
   const wasActive = useRef(active);
   useEffect(() => {
-    if (active || pendingApproval || containsFocus) setOpen(true);
-    else if (wasActive.current) setOpen(false);
+    if (containsFocus) setOpen(true);
+    else if (wasActive.current && !active) setOpen(false);
     wasActive.current = active;
-  }, [active, containsFocus, focusedMessageId, pendingApproval]);
+  }, [active, containsFocus, focusedMessageId]);
 
   const actionLabel = `${counts.actions} ${counts.actions === 1 ? "action" : "actions"}`;
   const approvalLabel = counts.approvals > 0
@@ -584,17 +592,23 @@ function WorkActivity({
     : "";
   const current = currentCommand(messages);
   const currentPhase = liveActivity?.at(-1);
+  const thinkingPreview = (currentPhase?.kind === "reasoning" ? currentPhase.text : reasoning)
+    ?.trim().split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1)?.replace(/\s+/g, " ");
   const stateLabel = pendingApproval
-    ? undefined
+    ? "Review the requested action below"
     : active
-      ? currentPhase?.kind === "tool" && currentPhase.status === "running"
+      ? drafting
+        ? "Drafting response…"
+        : counts.inProgress > 1
+          ? `${counts.inProgress} tools running`
+          : currentPhase?.kind === "tool" && currentPhase.status === "running"
         ? `Running ${currentPhase.title}`
         : currentPhase?.kind === "reasoning"
-          ? "Thinking…"
+          ? thinkingPreview || "Working…"
           : current
         ? `Running ${current.tool?.name ?? "tool"}`
         : reasoning
-          ? "Thinking…"
+          ? thinkingPreview || "Working…"
           : "Working…"
       : undefined;
 
@@ -605,34 +619,45 @@ function WorkActivity({
           type="button"
           onClick={() => setOpen((value) => !value)}
           aria-expanded={open}
-          className="flex w-full min-w-0 items-center gap-2 px-3 py-2.5 text-left text-[13px] text-ink-secondary hover:text-ink"
-        >
-          <ChevronRight size={14} className={cn("shrink-0 transition-transform", open && "rotate-90")} aria-hidden="true" />
-          <span className="min-w-0 flex-1 truncate">
-            <span className="font-medium text-ink">
-              {pendingApproval ? "Waiting for approval" : active && since ? <WorkingTimer since={since} /> : "Work activity"}
-            </span>
-            <span> · {actionLabel}{approvalLabel}</span>
-          </span>
-          {stateLabel && (
-            <span className="flex max-w-[42%] shrink-0 items-center gap-1.5 truncate text-[12px] text-ink-secondary" role="status" aria-live="polite">
-              {pendingApproval ? <ShieldCheck size={13} aria-hidden="true" /> : <Loader2 size={13} className="animate-spin" aria-hidden="true" />}
-              <span className="truncate">{stateLabel}</span>
-            </span>
+          aria-controls={detailsId}
+          className={cn(
+            "flex w-full min-w-0 items-center gap-2 text-left text-[13px] text-ink-secondary hover:text-ink",
+            active || pendingApproval ? "px-3 py-2.5" : "px-1 pt-2.5 pb-1",
           )}
+        >
+          {(active || pendingApproval) && <ChevronRight size={14} className={cn("shrink-0 transition-transform", open && "rotate-90")} aria-hidden="true" />}
+          <span className="min-w-0 truncate">
+            <span className="font-medium text-ink">
+              {pendingApproval ? "Waiting for approval" : active ? (since !== undefined ? <WorkingTimer since={since} /> : "Working…") : `Worked for ${formatWorkDuration(durationMs ?? 0)}`}
+            </span>
+            {(active || pendingApproval) && <>
+              {counts.actions > 0 && <span> · {actionLabel}</span>}
+              <span>{approvalLabel}</span>
+              {counts.failed > 0 && <span className="text-danger"> · {counts.failed} failed</span>}
+            </>}
+          </span>
+          {!active && !pendingApproval && <ChevronRight size={14} className={cn("shrink-0 transition-transform", open && "rotate-90")} aria-hidden="true" />}
         </button>
-        {open && (
-          <div className="ml-5 border-l border-hairline/40 pl-2">
+        {stateLabel && (
+          <div className="flex min-w-0 items-center gap-1.5 px-3 pb-2 pl-9 text-[12px] text-ink-secondary" role="status" aria-live="polite">
+            {pendingApproval ? <ShieldCheck size={13} className="shrink-0" aria-hidden="true" /> : <Loader2 size={13} className="shrink-0 animate-spin" aria-hidden="true" />}
+            <span className="min-w-0 truncate" title={stateLabel}>{stateLabel}</span>
+          </div>
+        )}
+        <div id={detailsId} hidden={!open} className="ml-5 border-l border-hairline/40 pl-2">
+          {open && <>
             {liveSegments ? liveSegments.map((segment, index) => segment.kind === "persisted" ? (
-              segment.message.id === pendingApproval?.id ? null : segment.message.kind === "text"
+              pendingApprovals.some((approval) => approval.id === segment.message.id) ? null : segment.message.kind === "text"
                 ? <ProgressNote key={segment.message.id} message={segment.message} />
                 : <WorkToolMessage key={segment.message.id} message={segment.message} />
             ) : segment.kind === "reasoning" ? (
               <div key={`reasoning:${index}`} className="grid grid-cols-[18px_minmax(0,1fr)] items-start gap-2 px-3 py-2.5">
                 <Brain size={14} className="mt-0.5 text-ink-secondary" aria-hidden="true" />
                 <div className="min-w-0">
-                  <div className="mb-0.5 text-[11px] font-medium uppercase tracking-[0.12em] text-ink-secondary">Thinking</div>
-                  <div className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-[12.5px] leading-relaxed text-ink-secondary">{segment.text}</div>
+                  <details>
+                    <summary className="cursor-pointer text-[12.5px] text-ink-secondary">Thinking</summary>
+                    <div className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-[12.5px] leading-relaxed text-ink-secondary">{segment.text}</div>
+                  </details>
                 </div>
               </div>
             ) : (
@@ -653,74 +678,19 @@ function WorkActivity({
               <ProgressNote key={row.message.id} message={row.message} />
             ) : (
               <Fragment key={`${row.turnId}:${rowIndex}`}>
-                {row.messages.map((message) => pendingApproval?.id === message.id ? null : (
-                  <div key={message.id} className="contents" data-mid={message.id}>
-                    <div className="grid grid-cols-[18px_minmax(0,1fr)_auto] items-start gap-2 px-3 py-2.5">
-                      {message.kind === "options" ? (
-                        <ShieldCheck size={14} className={cn("mt-0.5", message.card?.answered === "deny" ? "text-danger" : "text-ink-secondary")} aria-hidden="true" />
-                      ) : message.tool?.ok === false ? (
-                        <X size={14} className="mt-0.5 text-danger" aria-hidden="true" />
-                      ) : message.tool?.ok === undefined ? (
-                        <Clock size={14} className="mt-0.5 text-ink-secondary" aria-hidden="true" />
-                      ) : (
-                        <Check size={14} className="mt-0.5 text-success" aria-hidden="true" />
-                      )}
-                      <div className="min-w-0">
-                        <div className="whitespace-pre-wrap break-words font-mono text-[12.5px] leading-relaxed text-ink">
-                          {message.kind === "options" ? message.card?.subtitle : message.tool?.name}
-                        </div>
-                        {message.kind === "options" && message.card?.tool && (
-                          <div className="mt-0.5 text-[11px] text-ink-secondary">{message.card.tool}</div>
-                        )}
-                      </div>
-                      <span className="text-[11px] text-ink-secondary">
-                        {message.kind === "options" ? approvalOutcome(message) : message.tool?.ok === false ? "Failed" : message.tool?.ok === undefined ? "Running" : "Completed"}
-                      </span>
-                    </div>
-                  </div>
+                {row.messages.map((message) => pendingApprovals.some((approval) => approval.id === message.id) ? null : (
+                  <WorkToolMessage key={message.id} message={message} />
                 ))}
               </Fragment>
             ))}
             {reasoning && active && !liveActivity?.length && (
-              <div className="grid grid-cols-[18px_minmax(0,1fr)] items-start gap-2 px-3 py-2.5">
-                <Brain size={14} className="mt-0.5 text-ink-secondary" aria-hidden="true" />
-                <div className="min-w-0">
-                  <div className="mb-0.5 text-[11px] font-medium uppercase tracking-[0.12em] text-ink-secondary">Thinking</div>
-                  <div className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-[12.5px] leading-relaxed text-ink-secondary">{reasoning}</div>
-                </div>
-              </div>
+              <ThinkingStrip text={reasoning} active={false} />
             )}
-          </div>
-        )}
-        {pendingApproval && <ApprovalCard bot={bot} message={pendingApproval} />}
+          </>}
+        </div>
+        {pendingApprovals.map((approval) => <div key={approval.id} data-mid={approval.id}><ApprovalCard bot={bot} message={approval} /></div>)}
+        {!active && !pendingApproval && <hr className="mx-1 mt-0 mb-2 border-0 border-t border-hairline/40" />}
       </div>
-    </div>
-  );
-}
-
-function ChangedFilesCard({ files }: { files: ChangedFile[] }) {
-  if (files.length === 0) return null;
-  const label = `${files.length} changed ${files.length === 1 ? "file" : "files"}`;
-  return (
-    <div className="flex justify-start">
-      <section
-        className="w-full max-w-[840px] overflow-hidden rounded-xl border border-hairline/40 bg-panel"
-        aria-label={label}
-      >
-        <div className="flex items-center gap-2 border-b border-hairline/40 px-3 py-2.5 text-[13px] text-ink">
-          <FilePenLine size={14} className="shrink-0 text-ink-secondary" aria-hidden="true" />
-          <span className="font-medium">Changed files</span>
-          <span className="text-ink-secondary">· {files.length}</span>
-        </div>
-        <div className="divide-y divide-hairline/30 bg-inset/30">
-          {files.map((file) => (
-            <div key={`${file.kind}:${file.path}`} className="grid grid-cols-[86px_minmax(0,1fr)] gap-3 px-3 py-2 text-[12.5px]">
-              <span className="capitalize text-ink-secondary">{file.kind}</span>
-              <span className="truncate font-mono text-ink" title={file.path}>{file.path}</span>
-            </div>
-          ))}
-        </div>
-      </section>
     </div>
   );
 }
@@ -770,7 +740,7 @@ function StreamingBubble({ text }: { text: string }) {
  * no React commit per second while a turn streams (upstream trick). */
 function WorkingTimer({ since }: { since: number }) {
   const ref = useRef<HTMLSpanElement>(null);
-  const label = () => `Working for ${Math.max(0, Math.round((Date.now() - since) / 1000))}s`;
+  const label = () => `Working for ${formatWorkDuration(Date.now() - since)}`;
   useEffect(() => {
     const tick = () => {
       if (ref.current) ref.current.textContent = label();
@@ -791,6 +761,7 @@ const MessagesList = memo(function MessagesList({
   activeTurnId,
   liveReasoning,
   liveActivity,
+  drafting,
   workStartedAt,
   editingId,
   canRetryLast,
@@ -811,6 +782,7 @@ const MessagesList = memo(function MessagesList({
   liveReasoning?: string;
   /** Ordered ephemeral thinking/tool phases for the active turn. */
   liveActivity?: LiveActivitySegment[];
+  drafting?: boolean;
   /** User dispatch time used by the single turn-level elapsed indicator. */
   workStartedAt?: number;
   editingId: string | null;
@@ -826,7 +798,7 @@ const MessagesList = memo(function MessagesList({
   const { state, dispatch } = useStore();
   const rows = useMemo(() => commandRunRows(messages), [messages]);
   const fallbackActiveTurnId = bot.busy
-    ? [...commandRuns(rows)].reverse().find(
+    ? [...commandRuns(commandRunRows(transcript))].reverse().find(
         (row) => Boolean(currentCommand(row.messages) || hasPendingApproval(row.messages)),
       )?.turnId
     : undefined;
@@ -840,9 +812,11 @@ const MessagesList = memo(function MessagesList({
         <WorkActivity
           bot={bot}
           rows={[entry]}
+          durationMs={workDuration(entry.messages, transcript)}
           active={active}
           reasoning={active ? liveReasoning : undefined}
           liveActivity={active ? liveActivity : undefined}
+          drafting={active && drafting}
           since={workStartedAt}
           focusedMessageId={state.focusMessage?.messageId}
         />
@@ -923,13 +897,6 @@ const MessagesList = memo(function MessagesList({
           const activityStartIndex = lastCommandIndex >= 0
             ? entry.rows.findIndex(isActivityRow)
             : -1;
-          const changedFilesIndex = changedFiles.length > 0
-            ? entry.rows.findLastIndex((turnEntry, index) =>
-                !isActivityRow(turnEntry, index) &&
-                turnEntry.kind === "message" &&
-                turnEntry.message.role === "bot" &&
-                turnEntry.message.kind === "text")
-            : -1;
           const toolbarIndex = bot.busy
             ? -1
             : entry.rows.findLastIndex(
@@ -946,9 +913,11 @@ const MessagesList = memo(function MessagesList({
                   <WorkActivity
                     bot={bot}
                     rows={activityRows}
+                    durationMs={workDuration(messagesForTranscriptEntry(entry), transcript)}
                     active={Boolean(bot.busy && entry.turnId === liveTurnId)}
                     reasoning={entry.turnId === liveTurnId ? liveReasoning : undefined}
                     liveActivity={entry.turnId === liveTurnId ? liveActivity : undefined}
+                    drafting={entry.turnId === liveTurnId && drafting}
                     since={workStartedAt}
                     focusedMessageId={state.focusMessage?.messageId}
                   />
@@ -958,7 +927,6 @@ const MessagesList = memo(function MessagesList({
                 }
                 return (
                   <Fragment key={turnEntry.kind === "command-run" ? `run:${turnEntry.turnId}:${index}` : turnEntry.message.id}>
-                    {index === changedFilesIndex && <ChangedFilesCard files={changedFiles} />}
                     <div
                       data-mid={turnEntry.kind === "message" ? turnEntry.message.id : undefined}
                       className="contents"
@@ -968,7 +936,7 @@ const MessagesList = memo(function MessagesList({
                   </Fragment>
                 );
               })}
-              {changedFilesIndex < 0 && <ChangedFilesCard files={changedFiles} />}
+              <BotDelivery files={changedFiles} />
             </div>
           );
         })();
@@ -1127,9 +1095,9 @@ export function ChatView({ bot }: { bot: Bot }) {
   );
   const hasLiveWorkActivity = Boolean(
     bot.busy &&
-    activeTurnId &&
-    (liveActivity?.some((segment) => segment.kind === "tool") ||
-      messages.some((message) => message.turnId === activeTurnId && isCommandRunMessage(message))),
+    (activeTurnId
+      ? messages.some((message) => message.turnId === activeTurnId && isCommandRunMessage(message))
+      : commandRuns(commandRunRows(messages)).some((run) => currentCommand(run.messages) || hasPendingApproval(run.messages))),
   );
   // regenerate = fork the last user message with the same text — reuses the
   // existing branch machinery, so the old answer stays reachable via ‹ ›
@@ -1238,6 +1206,7 @@ export function ChatView({ bot }: { bot: Bot }) {
             activeTurnId={activeTurnId}
             liveReasoning={reasoning}
             liveActivity={liveActivity}
+            drafting={Boolean(visibleStreaming)}
             workStartedAt={activeTurnStartedAt ?? lastUserMessage?.at}
             editingId={editingId}
             canRetryLast={!bot.busy && Boolean(lastUserMessage)}
@@ -1277,20 +1246,19 @@ export function ChatView({ bot }: { bot: Bot }) {
                 </div>
               </div>
             )}
-            {reasoning && bot.busy && !hasLiveWorkActivity && (
-              <ThinkingStrip text={reasoning} active={!visibleStreaming} />
+            {!hasLiveWorkActivity && bot.busy && (liveActivity?.length || reasoning || visibleStreaming || showWorkingDots(bot.busy, visibleStreaming, messages.at(-1))) && (
+              <WorkActivity
+                key={activeTurnId ?? "pending"}
+                bot={bot}
+                rows={[]}
+                active
+                liveActivity={liveActivity}
+                reasoning={reasoning}
+                drafting={Boolean(visibleStreaming)}
+                since={activeTurnStartedAt ?? lastUserMessage?.at}
+              />
             )}
             {visibleStreaming && <StreamingBubble text={visibleStreaming} />}
-            {!reasoning && !hasLiveWorkActivity && showWorkingDots(bot.busy, visibleStreaming, messages.at(-1)) && (
-              <div className="flex items-center gap-2.5 px-1 py-2" role="status">
-                <span className="flex items-center gap-1.5" aria-hidden="true">
-                  <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:0ms]" />
-                  <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:150ms]" />
-                  <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:300ms]" />
-                </span>
-                <WorkingTimer since={lastUserMessage?.at ?? Date.now()} />
-              </div>
-            )}
           </>
         )}
       />
