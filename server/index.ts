@@ -4589,6 +4589,12 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
     }
     if (taskRoute && method === "PATCH") {
       const body = await readBody(req);
+      if ("unread" in body) {
+        if (body.unread !== true && body.unread !== false) return json(res, 400, { error: "unread must be a boolean" });
+        const task = store.setTaskUnread(taskRoute[1], taskRoute[2], body.unread);
+        if (!task) return json(res, 404, { error: "no such task" });
+        return json(res, 200, { task: wireTask(task) });
+      }
       const task = store.renameTask(taskRoute[1], taskRoute[2], String(body.title ?? ""));
       if (!task) return json(res, 404, { error: "no such task" });
       const fresh = botWithThread(store.bot(taskRoute[1])!);

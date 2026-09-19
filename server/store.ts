@@ -197,6 +197,9 @@ export interface TaskCheckpoint {
 
 export interface TaskRecord {
   threadId: ThreadId;
+  unread?: boolean;
+  /** Manual reminders survive announcements while the chat is selected. */
+  unreadSource?: "manual";
   title: string;
   /** Ownership of the current title. Missing on records created before
    * provenance was introduced; those records are never overwritten by an
@@ -558,6 +561,12 @@ export class Store {
           resumeCursors: b.resumeCursors ?? {},
         },
       ];
+    }
+    // Adopt the legacy active-chat badge; inactive chats had no unread state.
+    for (const bot of this.bots) {
+      for (const task of bot.tasks ?? []) {
+        task.unread ??= task.threadId === bot.threadId && bot.unread;
+      }
     }
     // Search reads SQLite directly, so migrate every known legacy transcript
     // at startup rather than waiting until the user happens to open it. Only
@@ -1021,6 +1030,13 @@ export class Store {
     const bot = this.bot(id);
     if (!bot) return null;
     Object.assign(bot, patch);
+    if (patch.unread !== undefined) {
+      const task = this.activeTask(id);
+      if (task) {
+        task.unread = patch.unread;
+        delete task.unreadSource;
+      }
+    }
     this.saveBots();
     this.emit({ type: "bot", botId: id });
     return bot;
@@ -1174,6 +1190,7 @@ export class Store {
     if (activate) {
       bot.threadId = task.threadId;
       bot.resumeCursors = {}; // legacy mirror follows the active task
+      bot.unread = false;
     }
     this.saveBots();
     this.emit({ type: "bot", botId });
@@ -1186,9 +1203,26 @@ export class Store {
     if (!bot || !task) return null;
     bot.threadId = task.threadId;
     bot.resumeCursors = { ...task.resumeCursors };
+    task.unread = false;
+    delete task.unreadSource;
+    bot.unread = false;
     this.saveBots();
     this.emit({ type: "bot", botId });
     return bot;
+  }
+
+  setTaskUnread(botId: string, threadId: string, unread: boolean): TaskRecord | null {
+    const bot = this.bot(botId);
+    const task = this.taskByThread(botId, threadId);
+    if (!bot || !task) return null;
+    task.unread = unread;
+    if (unread) task.unreadSource = "manual";
+    else delete task.unreadSource;
+    // Compatibility for agent-level badges/actions; tasks own the persisted truth.
+    if (bot.threadId === threadId) bot.unread = unread;
+    this.saveBots();
+    this.emit({ type: "bot", botId });
+    return task;
   }
 
   renameTask(botId: string, threadId: string, title: string): TaskRecord | null {
@@ -1260,7 +1294,7 @@ export class Store {
       const next = bot.tasks[0];
       bot.threadId = next?.threadId ?? "";
       bot.resumeCursors = { ...next?.resumeCursors };
-      bot.unread = false;
+      bot.unread = next?.unread ?? false;
       delete bot.pinnedMessageId;
       delete bot.rewound;
     }

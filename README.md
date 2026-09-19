@@ -9,7 +9,7 @@ Roundtable is a local-first desktop app for organizing and running a team of AI 
 - Create reusable agent profiles with custom avatars, models, instructions, working folders, and provider settings.
 - Chat directly with an agent or bring several agents into a channel with shared context, persistent sessions, and coordinated task execution.
 - Organize channel work into separate topics. Each topic keeps its own transcript, agent sessions, approvals, artifacts, and project checkpoint.
-- Navigate chats and channels from the workspace sidebar, filter conversations, and use context menus to pin, rename, archive, restore, or delete them.
+- Navigate chats and channels from the workspace sidebar and filter conversations. Right-click a direct chat in **Chats** to rename or delete it, mark that specific conversation as unread, edit its agent's profile, or copy its conversation ID. Unread status is saved separately for each chat. Channel/topic menus and the **Tasks** and **Agents** menus retain their existing actions.
 - Review tool and permission requests before an agent performs sensitive work, group command activity into readable runs, and inspect files changed during a turn.
 - Attach files and images, search local message history, and move efficiently through long conversations with virtualized, progressively loaded transcripts.
 - Inspect activity, token usage, tasks, routines, and Team Map relationships.

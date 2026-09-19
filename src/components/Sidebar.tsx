@@ -561,6 +561,7 @@ export function BotContextMenu({
   onArchive,
   onMoveToSection,
   threadId,
+  variant = "agent",
   archivePending = false,
 }: {
   menu: MenuState;
@@ -568,6 +569,7 @@ export function BotContextMenu({
   onArchive: (bot: Bot) => void;
   onMoveToSection: (botId: string) => void;
   threadId?: string;
+  variant?: "agent" | "chat";
   archivePending?: boolean;
 }) {
   const { state, dispatch } = useStore();
@@ -597,7 +599,8 @@ export function BotContextMenu({
   const archiveBlocked = visibleBotCount <= 1 || archivePending;
   const archiveHint = visibleBotCount <= 1 ? "Keep at least one active bot" : undefined;
   // keep the menu on-screen near the click
-  const top = Math.max(8, Math.min(menu.y, window.innerHeight - (task ? 500 : 380)));
+  const menuHeight = variant === "chat" && task ? 208 : task ? 500 : 380;
+  const top = Math.max(8, Math.min(menu.y, window.innerHeight - menuHeight));
   const left = Math.max(8, Math.min(menu.x, window.innerWidth - 240));
   const saveRename = () => {
     const title = draft.trim();
@@ -655,15 +658,32 @@ export function BotContextMenu({
           </form>
         ) : (
           <button type="button" onClick={() => setRenaming(true)} className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink hover:bg-raised/70">
-            <Pencil size={16} className="text-ink-secondary" />Rename chat
+            <Pencil size={16} className="text-ink-secondary" />{variant === "chat" ? "Rename Chat" : "Rename chat"}
           </button>
         )}
-        {item(<Trash2 size={16} />, "Delete chat", () =>
+        {item(<Trash2 size={16} />, variant === "chat" ? "Delete Chat" : "Delete chat", () =>
           dispatch({ type: "deleteTask", botId: bot.id, threadId: task.threadId }),
         { danger: true, disabled: bot.busy && task.threadId === bot.threadId, hint: "Delete only this chat and its conversation" })}
-        {divider("chat")}
+        {variant !== "chat" && divider("chat")}
       </>}
-      {[
+      {variant === "chat" && task ? [
+        item(<BellDot size={16} className="text-ink-secondary" />, "Mark message as unread", () =>
+          dispatch({ type: "markTaskUnread", botId: bot.id, threadId: task.threadId }),
+        ),
+        item(<Pencil size={16} className="text-ink-secondary" />, "Edit profile", () => {
+          dispatch({ type: "showAgents", botId: bot.id });
+        }),
+        item(<ClipboardCopy size={16} className="text-ink-secondary" />, "Copy Conversation Id", () => {
+          void (async () => {
+            try {
+              if (!navigator.clipboard?.writeText) throw new Error("Clipboard is unavailable.");
+              await navigator.clipboard.writeText(task.threadId);
+            } catch (cause) {
+              dispatch({ type: "error", message: `Could not copy conversation ID: ${cause instanceof Error ? cause.message : String(cause)}` });
+            }
+          })();
+        }),
+      ] : [
         item(
           bot.pinned ? <PinOff size={16} className="text-ink-secondary" /> : <Pin size={16} className="text-ink-secondary" />,
           task ? (bot.pinned ? "Unpin agent" : "Pin agent") : (bot.pinned ? "Unpin" : "Pin"),

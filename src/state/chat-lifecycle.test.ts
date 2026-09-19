@@ -49,3 +49,48 @@ describe("agents without chats", () => {
     expect(next.messagePages["new-chat"]?.loaded).toBe(true);
   });
 });
+
+describe("per-chat unread state", () => {
+  const marked: Bot = {
+    ...bot, unread: true,
+    tasks: [
+      { threadId: "old-chat", title: "Old chat", createdAt: 1, unread: true, unreadSource: "manual" },
+      { threadId: "inactive", title: "Inactive chat", createdAt: 2, unread: true, unreadSource: "manual" },
+    ],
+  };
+
+  it("preserves both manual marks on hydration and unrelated bot announcements", () => {
+    const hydrated = reducer(initialState, { type: "hydrate", bots: [marked], groups: [] });
+    const next = reducer(hydrated, { type: "botPatched", bot: { ...marked, name: "Renamed agent" } });
+    expect(next.bots[0]?.tasks).toEqual(marked.tasks);
+    expect(next.bots[0]?.unread).toBe(true);
+  });
+
+  it("reading the inactive chat does not clear the active chat", () => {
+    const next = reducer({ ...initialState, bots: [marked] }, {
+      type: "select", id: marked.id, threadId: "inactive",
+    });
+    expect(next.bots[0]?.unread).toBe(true);
+    expect(next.bots[0]?.tasks?.map((task) => task.unread)).toEqual([true, false]);
+    expect(next.bots[0]?.tasks?.[1]?.unreadSource).toBeUndefined();
+  });
+
+  it("reading the selected chat again clears only that chat, including legacy selection", () => {
+    const next = reducer({ ...initialState, selectedId: marked.id, bots: [marked] }, {
+      type: "select", id: marked.id,
+    });
+    expect(next.bots[0]?.unread).toBe(false);
+    expect(next.bots[0]?.tasks?.map((task) => task.unread)).toEqual([false, true]);
+  });
+
+  it("keeps legacy markUnread scoped to the active chat", () => {
+    const next = reducer({ ...initialState, bots: [bot] }, { type: "markUnread", botId: bot.id });
+    expect(next.bots[0]?.unread).toBe(true);
+    expect(next.bots[0]?.tasks?.[0]).toMatchObject({ unread: true });
+  });
+
+  it("does not optimistically leave a false unread badge when persistence fails", () => {
+    const state = { ...initialState, bots: [bot] };
+    expect(reducer(state, { type: "markTaskUnread", botId: bot.id, threadId: bot.threadId })).toBe(state);
+  });
+});

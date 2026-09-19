@@ -6,7 +6,10 @@ import { conversationMenuBindings, type ConversationMenuState, type Conversation
 import { ArchivedBotsPanel, BotContextMenu, RoomContextMenu, SectionPicker } from "./Sidebar";
 import { NewTopicDialog } from "./NewTopicDialog";
 
-export function useConversationMenus({ onTopicCreated }: { onTopicCreated?: (topic: Group) => void } = {}) {
+export function useConversationMenus({ onTopicCreated, directChatVariant = "agent" }: {
+  onTopicCreated?: (topic: Group) => void;
+  directChatVariant?: "agent" | "chat";
+} = {}) {
   const { state, dispatch } = useStore();
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -54,7 +57,7 @@ export function useConversationMenus({ onTopicCreated }: { onTopicCreated?: (top
         onNewTopic={setNewTopicChannelId}
         onMoveToSection={(groupId) => setSectionPicker({ ...menu, groupId })} />
     ) : createPortal(
-      <BotContextMenu key={menuKey} menu={menu} threadId={menu.threadId} archivePending={pending} onClose={() => setMenu(null)}
+      <BotContextMenu key={menuKey} menu={menu} threadId={menu.threadId} variant={directChatVariant} archivePending={pending} onClose={() => setMenu(null)}
         onArchive={(bot) => { void setArchived(bot, true); }}
         onMoveToSection={() => setSectionPicker(menu)} />,
       document.body,

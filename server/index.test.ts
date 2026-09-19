@@ -2062,6 +2062,40 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("marks the exact chat unread through the task API without renaming or switching it", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    try {
+      const current = (await api("POST", `/api/bots/${bot.id}/tasks`, {})).body.task;
+      const path = `/api/bots/${bot.id}/tasks/${bot.threadId}`;
+      const title = bot.tasks[0].title;
+      const stream = await openSse(`${BASE}/api/events`);
+      try {
+        const marked = await api("PATCH", path, { unread: true });
+        expect(marked.status).toBe(200);
+        expect(marked.body.task).toMatchObject({ threadId: bot.threadId, title, unread: true, unreadSource: "manual" });
+        const frame = await stream.until((f) => f.kind === "bot" && f.bot.id === bot.id &&
+          f.bot.tasks.some((task: { threadId: string; unread?: boolean }) => task.threadId === bot.threadId && task.unread));
+        expect(frame.bot.threadId).toBe(current.threadId);
+        expect(frame.bot.unread).toBe(false);
+      } finally {
+        stream.close();
+      }
+      expect((await api("PATCH", path, { unread: "true" })).status).toBe(400);
+      expect((await api("PATCH", `/api/bots/${bot.id}/tasks/missing`, { unread: true })).status).toBe(404);
+      const selected = await api("POST", path);
+      expect(selected.body.bot.tasks.find((task: { threadId: string }) => task.threadId === bot.threadId).unread).toBe(false);
+      await api("PATCH", path, { unread: true });
+      const listed = (await api("GET", "/api/bots")).body.bots.find((item: { id: string }) => item.id === bot.id);
+      expect(listed.unread).toBe(true);
+      expect(listed.tasks.find((task: { threadId: string }) => task.threadId === bot.threadId).unreadSource).toBe("manual");
+      await api("PATCH", path, { unread: false });
+      await api("DELETE", path);
+      expect((await api("PATCH", path, { unread: true })).status).toBe(404);
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
   it("validates the event inspector limit at the HTTP boundary", async () => {
     const bot = (await api("GET", "/api/bots")).body.bots[0];
     for (const value of ["nope", "0", "-1", "1.5", "Infinity"]) {

@@ -51,7 +51,7 @@ function directChats(agent: Agent): ChatRow[] {
       // timestamp would move two rows every time the user switches chats.
       at: task.createdAt,
       preview: active && agent.busy ? "Working…" : preview.text,
-      unread: active && agent.unread,
+      unread: task.unread ?? (active && agent.unread),
       agent,
     };
   });
@@ -244,6 +244,7 @@ export function WorkspaceNavigation({ open, onClose }: { open: boolean; onClose:
   const [pendingChatId, setPendingChatId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const menus = useConversationMenus({
+    directChatVariant: view === "chats" ? "chat" : "agent",
     onTopicCreated: (topic) => {
       setExpanded((value) => ({ ...value, [topic.channelId ?? topic.id]: true }));
       onClose();
@@ -283,7 +284,7 @@ export function WorkspaceNavigation({ open, onClose }: { open: boolean; onClose:
     menus.close();
     setPendingChatId(chat.id);
     if (chat.agent) {
-      dispatch({ type: "select", id: chat.agent.id });
+      dispatch({ type: "select", id: chat.agent.id, threadId: chat.threadId });
       if (chat.threadId !== chat.agent.threadId) dispatch({ type: "switchTask", botId: chat.agent.id, threadId: chat.threadId });
     } else if (chat.group) dispatch({ type: "select", id: chat.group.id });
     onClose();

@@ -277,6 +277,9 @@ export type TaskCheckpoint = {
 
 export interface Task {
   threadId: string;
+  unread?: boolean;
+  /** Manual reminders are cleared by opening this chat, not by bot announcements. */
+  unreadSource?: "manual";
   title: string;
   titleSource?: "first-message" | "generated" | "user" | "assigned";
   createdAt: number;
@@ -585,7 +588,7 @@ export type Action =
   | { type: "messagePageMerged"; threadId: string; messages: Message[]; hasMore: boolean }
   | { type: "messagePageFailed"; threadId: string; error: string }
   | { type: "configStatus"; config: ConfigStatus }
-  | { type: "select"; id: string }
+  | { type: "select"; id: string; threadId?: string }
   | { type: "send"; botId: string; text: string; replyToId?: string }
   | { type: "pendingQueued"; threadId: string; queueId: string; text: string }
   | { type: "consumePendingQueued"; threadId: string; queueId: string }
@@ -616,6 +619,7 @@ export type Action =
   | { type: "deleteBot"; botId: string }
   | { type: "duplicateBot"; botId: string }
   | { type: "markUnread"; botId: string }
+  | { type: "markTaskUnread"; botId: string; threadId: string }
   | { type: "botPatched"; bot: BotAnnouncement }
   | { type: "messageAdded"; threadId: string; message: Message }
   | { type: "messagePatched"; threadId: string; message: Message }
@@ -876,7 +880,15 @@ export function reducer(state: AppState, action: Action): AppState {
           groups: state.groups.map((g) => (g.id === action.id ? { ...g, unread: false } : g)),
         };
       }
-      return updateBot({ ...state, activeView: "chat", selectedId: action.id }, action.id, (b) => ({ ...b, unread: false }));
+      return updateBot({ ...state, activeView: "chat", selectedId: action.id }, action.id, (b) => {
+        const threadId = action.threadId ?? b.threadId;
+        return {
+          ...b,
+          unread: threadId === b.threadId ? false : b.unread,
+          tasks: b.tasks?.map((task) => task.threadId === threadId
+            ? { ...task, unread: false, unreadSource: undefined } : task),
+        };
+      });
     }
     // optimistic card settle; the server's message.patch confirms it later
     case "answerCard": {
@@ -908,7 +920,11 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, bots, selectedId };
     }
     case "markUnread":
-      return updateBot(state, action.botId, (b) => ({ ...b, unread: true }));
+      return updateBot(state, action.botId, (b) => ({
+        ...b, unread: true,
+        tasks: b.tasks?.map((task) => task.threadId === b.threadId
+          ? { ...task, unread: true, unreadSource: undefined } : task),
+      }));
     case "botPatched": {
       const before = state.bots.find((b) => b.id === action.bot.id);
       // Bot frames are complete except for their transcript. An unknown one
@@ -1115,6 +1131,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case "switchTask":
     case "renameTask":
     case "deleteTask":
+    case "markTaskUnread":
       return state;
     case "taskSwitched": {
       const updated = updateBot(state, action.bot.id, (bot) => ({
@@ -1554,10 +1571,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             () => {},
           );
           break;
+        case "markTaskUnread":
+          // Like rename, apply the server announcement only after persistence succeeds.
+          api(`/api/bots/${action.botId}/tasks/${action.threadId}`, {
+            method: "PATCH", body: JSON.stringify({ unread: true }),
+          }).catch(showError);
+          break;
         case "select": {
           const bot = stateRef.current.bots.find((b) => b.id === action.id);
           const group = stateRef.current.groups.find((g) => g.id === action.id);
-          if (bot?.unread) {
+          const threadId = action.threadId ?? bot?.threadId;
+          const task = bot?.tasks?.find((candidate) => candidate.threadId === threadId);
+          if (task?.unread) {
+            api(`/api/bots/${action.id}/tasks/${threadId}`, {
+              method: "PATCH", body: JSON.stringify({ unread: false }),
+            }).catch(showError);
+          } else if (bot?.unread && threadId === bot.threadId) {
             api(`/api/bots/${action.id}`, { method: "PATCH", body: JSON.stringify({ unread: false }) }).catch(() => {});
           } else if (group?.unread) {
             api(`/api/groups/${action.id}`, { method: "PATCH", body: JSON.stringify({ unread: false }) }).catch(() => {});
@@ -1812,13 +1841,23 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           const announced: BotAnnouncement & { hasMore?: boolean } = frame.bot;
           const { hasMore, ...bot } = announced;
           // reading the selected chat clears its badge immediately
-          if (bot.unread && bot.id === stateRef.current.selectedId) {
+          const activeTask = bot.tasks?.find((task) => task.threadId === bot.threadId);
+          if (bot.unread && activeTask?.unreadSource !== "manual" &&
+              bot.id === stateRef.current.selectedId && stateRef.current.activeView === "chat") {
             bot.unread = false;
-            orchestrationFetch(`/api/bots/${bot.id}`, {
+            if (activeTask) activeTask.unread = false;
+            // Capture the thread so a concurrent switch cannot clear another chat.
+            api(activeTask
+              ? `/api/bots/${bot.id}/tasks/${activeTask.threadId}`
+              : `/api/bots/${bot.id}`, {
               method: "PATCH",
-              headers: { "content-type": "application/json" },
               body: JSON.stringify({ unread: false }),
-            }).catch(() => {});
+            }).catch((cause) => {
+              rawDispatch({
+                type: "error",
+                message: `Could not mark chat as read: ${cause instanceof Error ? cause.message : String(cause)}`,
+              });
+            });
           }
           rawDispatch({
             type: "botPatched",

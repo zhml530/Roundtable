@@ -77,9 +77,9 @@ function click(label: string) {
   // SAFETY: Menu action handlers take no arguments and never inspect the click event.
   props.onClick?.({} as MouseEvent<HTMLButtonElement>);
 }
-function renderDirect(threadId = "older") {
+function renderDirect(threadId = "older", variant: "agent" | "chat" = "agent") {
   return renderToStaticMarkup(createElement(BotContextMenu, {
-    menu: { botId: bot.id, x: 100, y: 100 }, threadId, onClose, onArchive, onMoveToSection,
+    menu: { botId: bot.id, x: 100, y: 100 }, threadId, variant, onClose, onArchive, onMoveToSection,
   }));
 }
 
@@ -94,6 +94,61 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("restored conversation menus", () => {
+  it("limits Chats direct menus to the five requested actions in order", () => {
+    renderDirect("older", "chat");
+    expect(buttons.map((props) =>
+      renderToStaticMarkup(createElement("button", props)).replace(/<[^>]*>/g, ""),
+    )).toEqual(["Rename Chat", "Delete Chat", "Mark message as unread", "Edit profile", "Copy Conversation Id"]);
+  });
+
+  it.each(["older", "current"])("targets the clicked %s chat and opens its owning profile", (threadId) => {
+    renderDirect(threadId, "chat");
+    click("Delete Chat");
+    click("Mark message as unread");
+    click("Edit profile");
+    click("Copy Conversation Id");
+    expect(dispatch.mock.calls.map(([action]) => action)).toEqual([
+      { type: "deleteTask", botId: "agent", threadId },
+      { type: "markTaskUnread", botId: "agent", threadId },
+      { type: "showAgents", botId: "agent" },
+    ]);
+    expect(writeText).toHaveBeenCalledWith(threadId);
+    expect(onClose).toHaveBeenCalledTimes(4);
+  });
+
+  it.each(["denied", "unavailable"])("reports %s clipboard failures explicitly", async (failure) => {
+    if (failure === "unavailable") vi.stubGlobal("navigator", {});
+    else writeText.mockRejectedValueOnce(new Error("Permission denied"));
+    renderDirect("older", "chat");
+    click("Copy Conversation Id");
+    await Promise.resolve();
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "error", message: expect.stringContaining("Could not copy conversation ID:"),
+    });
+  });
+
+  it("keeps the busy-chat deletion guard in Chats", () => {
+    state = { ...state, bots: [{ ...bot, busy: true }] };
+    renderDirect("current", "chat");
+    expect(button("Delete Chat").disabled).toBe(true);
+    buttons.length = 0;
+    renderDirect("older", "chat");
+    expect(button("Delete Chat").disabled).toBe(false);
+  });
+
+  it("opening an inactive Chats row identifies the read target before switching", () => {
+    state = { ...state, bots: [bot] };
+    renderToStaticMarkup(createElement(WorkspaceNavigation, { open: true, onClose }));
+    const row = buttons.find((props) =>
+      props.onContextMenu && renderToStaticMarkup(createElement("button", props)).includes("Older chat"));
+    // SAFETY: The row click handler takes no arguments and does not inspect the event.
+    row?.onClick?.({} as MouseEvent<HTMLButtonElement>);
+    expect(dispatch.mock.calls.map(([action]) => action)).toEqual([
+      { type: "select", id: "agent", threadId: "older" },
+      { type: "switchTask", botId: "agent", threadId: "older" },
+    ]);
+  });
+
   it("renders every original action with explicit agent scope and separate chat actions", () => {
     renderDirect();
     for (const label of ["Rename chat", "Delete chat", "Pin agent", "Move agent to context",

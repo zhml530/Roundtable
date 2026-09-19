@@ -4,7 +4,7 @@
 // transcript AND its own provider session. If resume cursors leaked
 // between tasks, a "fresh" task would silently resume the previous
 // conversation, which is the exact thing tasks exist to prevent.
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -30,6 +30,67 @@ afterEach(async () => {
 });
 
 describe("tasks", () => {
+  it("persists inactive and selected manual unread marks independently across reloads", async () => {
+    const { Store, store } = await freshStore();
+    const bot = store.createBot();
+    const first = bot.threadId;
+    const second = store.createTask(bot.id)!;
+    store.setTaskUnread(bot.id, first, true);
+    expect(bot.threadId).toBe(second.threadId);
+    expect(bot.unread).toBe(false);
+    store.setTaskUnread(bot.id, second.threadId, true);
+    const reloaded = new Store(() => ({ instanceId: "claude", model: "m" }));
+    expect(reloaded.tasks(bot.id).map((task) => [task.unread, task.unreadSource])).toEqual([
+      [true, "manual"], [true, "manual"],
+    ]);
+    reloaded.switchTask(bot.id, first);
+    expect(reloaded.activeTask(bot.id)).toMatchObject({ unread: false });
+    expect(reloaded.activeTask(bot.id)?.unreadSource).toBeUndefined();
+    expect(reloaded.taskByThread(bot.id, second.threadId)?.unread).toBe(true);
+    expect(reloaded.bot(bot.id)?.unread).toBe(false);
+    // Opening the same selected chat is also a read operation.
+    reloaded.setTaskUnread(bot.id, first, true);
+    reloaded.setTaskUnread(bot.id, first, false);
+    expect(reloaded.taskByThread(bot.id, second.threadId)?.unread).toBe(true);
+    reloaded.deleteTask(bot.id, second.threadId);
+    const afterDelete = new Store(() => ({ instanceId: "claude", model: "m" }));
+    expect(afterDelete.tasks(bot.id)).toHaveLength(1);
+    expect(afterDelete.activeTask(bot.id)?.unread).toBe(false);
+  });
+
+  it("mirrors legacy unread mutations only onto the active task", async () => {
+    const { store } = await freshStore();
+    const bot = store.createBot();
+    const first = bot.threadId;
+    store.patchBot(bot.id, { unread: true });
+    expect(store.activeTask(bot.id)?.unread).toBe(true);
+    store.createTask(bot.id);
+    expect(bot.unread).toBe(false);
+    expect(store.taskByThread(bot.id, first)?.unread).toBe(true);
+    store.setTaskUnread(bot.id, bot.threadId, true);
+    store.patchBot(bot.id, { unread: false });
+    expect(store.activeTask(bot.id)?.unread).toBe(false);
+    expect(store.activeTask(bot.id)?.unreadSource).toBeUndefined();
+    expect(store.taskByThread(bot.id, first)?.unread).toBe(true);
+    expect(store.setTaskUnread(bot.id, "unknown", true)).toBeNull();
+  });
+
+  it("adopts legacy active-chat unread without marking other chats on reload", async () => {
+    const { Store, store } = await freshStore();
+    const bot = store.createBot();
+    store.createTask(bot.id);
+    store.patchBot(bot.id, { unread: true });
+    const path = join(home, ".Roundtable", "bots.json");
+    const saved = JSON.parse(readFileSync(path, "utf8"));
+    for (const record of saved) {
+      for (const task of record.tasks) delete task.unread;
+    }
+    writeFileSync(path, JSON.stringify(saved));
+    const reloaded = new Store(() => ({ instanceId: "claude", model: "m" }));
+    expect(reloaded.tasks(bot.id).map((task) => task.unread)).toEqual([true, false]);
+    expect(reloaded.activeTask(bot.id)?.unreadSource).toBeUndefined();
+  });
+
   it("gives every new bot one task pointing at its thread", async () => {
     const { store, UNTITLED_TASK } = await freshStore();
     const bot = store.createBot();
