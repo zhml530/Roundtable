@@ -684,10 +684,17 @@ export class Store {
     return this.conversation(topic.id)!;
   }
 
-  patchConversation(id: string, patch: Partial<Pick<ChannelTopicRecord, "unread" | "busyBotId" | "pinnedMessageId" | "pinnedCwd" | "memberSessions">>): GroupConversation | null {
+  patchConversation(id: string, patch: Partial<Pick<ChannelTopicRecord, "unread" | "busyBotId" | "pinnedMessageId" | "pinnedCwd" | "memberSessions">> & { topicName?: string }): GroupConversation | null {
     const owner = this.conversationRecord(id);
     if (!owner) return null;
-    Object.assign(owner.record, patch);
+    const { topicName, ...local } = patch;
+    if (topicName !== undefined) {
+      if (owner.record === owner.channel) throw new Error("General uses the channel name");
+      const name = topicName.trim();
+      if (!name || name.length > 100) throw new Error("topic name must be between 1 and 100 characters");
+      owner.record.name = name;
+    }
+    Object.assign(owner.record, local);
     this.saveGroups();
     this.emit({ type: "group", groupId: id });
     return this.conversation(id)!;
@@ -795,6 +802,17 @@ export class Store {
         unlinkSync(file);
       } catch {}
     }
+  }
+
+  deleteConversation(id: string): boolean {
+    const owner = this.conversationRecord(id);
+    if (!owner) return false;
+    if (owner.record === owner.channel) return this.deleteGroup(id);
+    owner.channel.topics = owner.channel.topics?.filter((topic) => topic.id !== id);
+    this.saveGroups();
+    this.deleteThreadRecord(owner.record.threadId);
+    this.emit({ type: "group.deleted", groupId: id });
+    return true;
   }
 
   deleteGroup(id: string): boolean {

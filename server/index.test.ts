@@ -1609,6 +1609,35 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("renames and deletes only the addressed Channel topic", async () => {
+    const bot = (await api("POST", "/api/bots", {})).body.bot;
+    const channel = (await api("POST", "/api/groups", { name: "Topic parent", memberIds: [bot.id] })).body.group;
+    try {
+      const topic = (await api("POST", `/api/groups/${channel.id}/topics`, { name: "Release" })).body.group;
+      const sibling = (await api("POST", `/api/groups/${channel.id}/topics`, { name: "Planning" })).body.group;
+      for (const topicName of ["", " ", "x".repeat(101), 12, null]) {
+        expect((await api("PATCH", `/api/groups/${topic.id}`, { topicName })).status).toBe(400);
+      }
+      expect((await api("PATCH", `/api/groups/${channel.id}`, { topicName: "Not General" })).status).toBe(400);
+      const renamed = await api("PATCH", `/api/groups/${topic.id}`, { topicName: " Launch " });
+      expect(renamed.status).toBe(200);
+      expect(renamed.body.group).toMatchObject({ id: topic.id, name: "Topic parent", topicName: "Launch" });
+      const persisted = JSON.parse(readFileSync(join(home, ".Roundtable", "groups.json"), "utf8"));
+      expect(persisted.find((group: any) => group.id === channel.id).topics[0].name).toBe("Launch");
+      expect((await api("DELETE", `/api/groups/${topic.id}`)).status).toBe(200);
+      const groups = (await api("GET", "/api/bots")).body.groups;
+      expect(groups.find((group: any) => group.id === topic.id)).toBeUndefined();
+      expect(groups.find((group: any) => group.id === channel.id)).toMatchObject({ name: "Topic parent", topicName: "General" });
+      expect(groups.find((group: any) => group.id === sibling.id)).toMatchObject({ name: "Topic parent", topicName: "Planning" });
+      expect((await api("GET", `/api/threads/${topic.threadId}/messages`)).status).toBe(404);
+      expect((await api("GET", `/api/threads/${channel.threadId}/messages`)).status).toBe(200);
+      expect((await api("GET", `/api/threads/${sibling.threadId}/messages`)).status).toBe(200);
+    } finally {
+      await api("DELETE", `/api/groups/${channel.id}`);
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
   it("delivers one attributed direct reply and checkpoints observed tool use without synthesis", async () => {
     const bot = (await api("POST", "/api/bots", {})).body.bot;
     await api("PATCH", `/api/bots/${bot.id}`, { name: "Direct Atlas", autoApprove: true, modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } });

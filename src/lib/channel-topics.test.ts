@@ -59,4 +59,15 @@ describe("topic navigation", () => {
     expect(pinned.groups[0]?.pinnedMessageId).toBeUndefined();
     expect(pinned.groups[1]?.pinnedMessageId).toBe("release-only");
   });
+
+  it("renames only the addressed topic while channel names remain shared", () => {
+    const sibling = { ...release, id: "sibling", topicName: "Planning" };
+    const state = { ...initialState, groups: [general, release, sibling] };
+    const renamed = reducer(state, { type: "patchGroup", groupId: release.id, patch: { topicName: "Launch" } });
+    expect(renamed.groups.map((group) => group.topicName)).toEqual(["General", "Launch", "Planning"]);
+    expect(renamed.groups.map((group) => group.name)).toEqual(["Engineering", "Engineering", "Engineering"]);
+    const channelRenamed = reducer(renamed, { type: "patchGroup", groupId: general.id, patch: { name: "Product" } });
+    expect(channelRenamed.groups.map((group) => group.name)).toEqual(["Product", "Product", "Product"]);
+    expect(channelRenamed.groups.map((group) => group.topicName)).toEqual(["General", "Launch", "Planning"]);
+  });
 });
