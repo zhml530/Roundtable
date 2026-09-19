@@ -14,7 +14,7 @@ export function useConversationMenus({ onTopicCreated, directChatVariant = "agen
   const stateRef = useRef(state);
   stateRef.current = state;
   const [menu, setMenu] = useState<ConversationMenuState | null>(null);
-  const [sectionPicker, setSectionPicker] = useState<ConversationMenuState | null>(null);
+  const [sectionPicker, setSectionPicker] = useState<Extract<ConversationMenuState, { botId: string }> | null>(null);
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [feedback, setFeedback] = useState<{ error: boolean; text: string; restoreBot?: Bot } | null>(null);
   const [pending, setPending] = useState(false);
@@ -54,8 +54,7 @@ export function useConversationMenus({ onTopicCreated, directChatVariant = "agen
     {newTopicChannel && <NewTopicDialog channel={newTopicChannel} onClose={() => setNewTopicChannelId(null)} onCreated={onTopicCreated} />}
     {menu && ("groupId" in menu ? (
       <RoomContextMenu key={menuKey} menu={menu} onClose={() => setMenu(null)}
-        onNewTopic={setNewTopicChannelId}
-        onMoveToSection={(groupId) => setSectionPicker({ ...menu, groupId })} />
+        onNewTopic={setNewTopicChannelId} />
     ) : createPortal(
       <BotContextMenu key={menuKey} menu={menu} threadId={menu.threadId} variant={directChatVariant} archivePending={pending} onClose={() => setMenu(null)}
         onArchive={(bot) => { void setArchived(bot, true); }}
@@ -64,13 +63,10 @@ export function useConversationMenus({ onTopicCreated, directChatVariant = "agen
     ))}
     {sectionPicker && createPortal(
       <SectionPicker anchor={sectionPicker}
-        current={"groupId" in sectionPicker
-          ? state.groups.find((group) => group.id === sectionPicker.groupId)?.section
-          : state.bots.find((bot) => bot.id === sectionPicker.botId)?.section}
+        current={state.bots.find((bot) => bot.id === sectionPicker.botId)?.section}
         onClose={() => setSectionPicker(null)}
         onAssign={(section) => {
-          if ("groupId" in sectionPicker) dispatch({ type: "patchGroup", groupId: sectionPicker.groupId, patch: { section } });
-          else dispatch({ type: "updateBot", botId: sectionPicker.botId, patch: { section } });
+          dispatch({ type: "updateBot", botId: sectionPicker.botId, patch: { section } });
         }} />,
       document.body,
     )}

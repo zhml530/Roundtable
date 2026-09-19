@@ -209,23 +209,43 @@ describe("restored conversation menus", () => {
     expect(renderDirect("deleted")).toBe("");
   });
 
-  it("restores channel rename, context, copy and delete actions", () => {
+  it("keeps channel rename, copy and delete without a context move action", () => {
     renderToStaticMarkup(createElement(RoomContextMenu, {
-      menu: { groupId: group.id, x: 100, y: 100 }, onClose, onMoveToSection,
+      menu: { groupId: group.id, x: 100, y: 100 }, onClose,
     }));
-    button("Rename Channel");
-    click("Move to context");
+    expect(buttons.map((props) =>
+      renderToStaticMarkup(createElement("button", props)).replace(/<[^>]*>/g, ""),
+    )).toEqual(["Rename Channel", "Copy conversation ID", "Delete Channel"]);
     click("Copy conversation ID");
     click("Delete Channel");
-    expect(onMoveToSection).toHaveBeenCalledWith("channel");
     expect(writeText).toHaveBeenCalledWith("channel-thread");
     expect(dispatch).toHaveBeenCalledWith({ type: "deleteGroup", groupId: "channel" });
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it("scopes topic actions to the topic while creating new topics in its parent", () => {
+    const topic = { ...group, id: "release", channelId: group.id, topicName: "Release", threadId: "release-thread" };
+    state = { ...state, groups: [group, topic] };
+    const onNewTopic = vi.fn();
+    renderToStaticMarkup(createElement(RoomContextMenu, {
+      menu: { groupId: topic.id, x: 100, y: 100 }, onClose, onNewTopic,
+    }));
+    expect(buttons.map((props) =>
+      renderToStaticMarkup(createElement("button", props)).replace(/<[^>]*>/g, ""),
+    )).toEqual(["New Topic", "Rename Topic", "Copy conversation ID", "Delete Topic"]);
+    click("New Topic");
+    click("Copy conversation ID");
+    click("Delete Topic");
+    expect(onNewTopic).toHaveBeenCalledWith(group.id);
+    expect(writeText).toHaveBeenCalledWith(topic.threadId);
+    expect(dispatch.mock.calls.map(([action]) => action)).toEqual([{ type: "deleteGroup", groupId: topic.id }]);
+    expect(onClose).toHaveBeenCalledTimes(3);
   });
 
   it("creates a topic from the channel menu using the same callback as the inline plus", () => {
     const onNewTopic = vi.fn();
     renderToStaticMarkup(createElement(RoomContextMenu, {
-      menu: { groupId: group.id, x: 100, y: 100 }, onClose, onMoveToSection, onNewTopic,
+      menu: { groupId: group.id, x: 100, y: 100 }, onClose, onNewTopic,
     }));
     click("New Topic");
     expect(onNewTopic).toHaveBeenCalledWith(group.id);
@@ -249,7 +269,7 @@ describe("restored conversation menus", () => {
   it("does not offer topics for bot-to-bot DMs", () => {
     state = { ...state, groups: [{ ...group, dm: true }] };
     const markup = renderToStaticMarkup(createElement(RoomContextMenu, {
-      menu: { groupId: group.id, x: 100, y: 100 }, onClose, onMoveToSection, onNewTopic: vi.fn(),
+      menu: { groupId: group.id, x: 100, y: 100 }, onClose, onNewTopic: vi.fn(),
     }));
     expect(markup).not.toContain("New Topic");
   });

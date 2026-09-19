@@ -205,18 +205,20 @@ function GroupListItem({
 export function RoomContextMenu({
   menu,
   onClose,
-  onMoveToSection,
   onNewTopic,
 }: {
   menu: { groupId: string; x: number; y: number };
   onClose: () => void;
-  onMoveToSection: (groupId: string) => void;
   onNewTopic?: (channelId: string) => void;
 }) {
   const { state, dispatch } = useStore();
   const group = state.groups.find((g) => g.id === menu.groupId);
+  // General shares the channel ID; only additional topics have their own ID.
+  const isTopic = Boolean(group?.channelId && group.channelId !== group.id);
+  const name = group ? (isTopic ? group.topicName ?? "General" : group.name) : "";
+  const kind = isTopic ? "topic" : "channel";
   const [renaming, setRenaming] = useState(false);
-  const [draft, setDraft] = useState(group?.name ?? "");
+  const [draft, setDraft] = useState(name);
   const menuRef = useMenuFocus();
 
   useEffect(() => {
@@ -236,8 +238,11 @@ export function RoomContextMenu({
 
   if (!group) return null;
   const saveRename = () => {
-    const name = nextRename(group.name, draft);
-    if (name) dispatch({ type: "patchGroup", groupId: group.channelId ?? group.id, patch: { name } });
+    const renamed = nextRename(name, draft);
+    if (renamed) dispatch({
+      type: "patchGroup", groupId: group.id,
+      patch: isTopic ? { topicName: renamed } : { name: renamed },
+    });
     onClose();
   };
   const top = Math.max(8, Math.min(menu.y, window.innerHeight - 204));
@@ -262,7 +267,7 @@ export function RoomContextMenu({
             autoFocus
             value={draft}
             maxLength={100}
-            aria-label={`Rename ${group.name}`}
+            aria-label={`Rename ${kind} ${name}`}
             onFocus={(event) => event.currentTarget.select()}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
@@ -280,7 +285,7 @@ export function RoomContextMenu({
           <button
             type="button"
             onClick={saveRename}
-            aria-label="Save channel name"
+            aria-label={`Save ${kind} name`}
             title="Save"
             className="flex size-8 shrink-0 items-center justify-center rounded-lg text-ink-secondary hover:bg-raised hover:text-ink"
           >
@@ -289,7 +294,7 @@ export function RoomContextMenu({
           <button
             type="button"
             onClick={onClose}
-            aria-label="Cancel channel rename"
+            aria-label={`Cancel ${kind} rename`}
             title="Cancel"
             className="flex size-8 shrink-0 items-center justify-center rounded-lg text-ink-secondary hover:bg-raised hover:text-ink"
           >
@@ -299,25 +304,15 @@ export function RoomContextMenu({
       ) : (
         <button
           onClick={() => {
-            setDraft(group.name);
+            setDraft(name);
             setRenaming(true);
           }}
           className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink hover:bg-raised/70"
         >
           <Pencil size={16} className="text-ink-secondary" />
-          Rename Channel
+          {isTopic ? "Rename Topic" : "Rename Channel"}
         </button>
       )}
-      <button
-        onClick={() => {
-          onClose();
-          onMoveToSection(group.channelId ?? group.id);
-        }}
-        className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink hover:bg-raised/70"
-      >
-        <FolderPlus size={16} className="text-ink-secondary" />
-        Move to context
-      </button>
       <button
         onClick={() => {
           void navigator.clipboard?.writeText(group.threadId);
@@ -330,13 +325,13 @@ export function RoomContextMenu({
       </button>
       <button
         onClick={() => {
-          dispatch({ type: "deleteGroup", groupId: group.channelId ?? group.id });
+          dispatch({ type: "deleteGroup", groupId: group.id });
           onClose();
         }}
         className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-danger hover:bg-raised/70"
       >
         <Trash2 size={16} />
-        Delete Channel
+        {isTopic ? "Delete Topic" : "Delete Channel"}
       </button>
     </div>,
     document.body,
@@ -961,7 +956,6 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [sectionPicker, setSectionPicker] = useState<MenuState | null>(null);
   const [roomMenu, setRoomMenu] = useState<{ groupId: string; x: number; y: number } | null>(null);
-  const [roomSectionPicker, setRoomSectionPicker] = useState<{ groupId: string; x: number; y: number } | null>(null);
   const [plusOpen, setPlusOpen] = useState(false);
   const [newRoom, setNewRoom] = useState(false);
   const [teamLibraryOpen, setTeamLibraryOpen] = useState(false);
@@ -1393,17 +1387,6 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
           key={roomMenu.groupId}
           menu={roomMenu}
           onClose={() => setRoomMenu(null)}
-          onMoveToSection={(groupId) => setRoomSectionPicker({ groupId, x: roomMenu.x, y: roomMenu.y })}
-        />
-      )}
-      {roomSectionPicker && (
-        <SectionPicker
-          current={state.groups.find((g) => g.id === roomSectionPicker.groupId)?.section}
-          anchor={roomSectionPicker}
-          onClose={() => setRoomSectionPicker(null)}
-          onAssign={(section) =>
-            dispatch({ type: "patchGroup", groupId: roomSectionPicker.groupId, patch: { section } })
-          }
         />
       )}
       {newRoom && <NewRoomPanel onClose={() => setNewRoom(false)} />}

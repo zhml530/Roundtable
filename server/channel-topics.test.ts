@@ -72,6 +72,33 @@ describe("Channel topics", () => {
     expect(new Store(selection).conversations()).toEqual([]);
   });
 
+  it("persists topic-only renames and deletions without changing the parent or siblings", () => {
+    const store = new Store(selection);
+    const channel = store.createGroup("Engineering", [store.createBot().id]);
+    const topic = store.createTopic(channel.id, "Release");
+    const sibling = store.createTopic(channel.id, "Planning");
+    store.appendMessage(channel.threadId, { role: "user", kind: "text", text: "General history" });
+    store.appendMessage(topic.threadId, { role: "user", kind: "text", text: "Release history" });
+    store.appendMessage(sibling.threadId, { role: "user", kind: "text", text: "Planning history" });
+    expect(store.patchConversation(topic.id, { topicName: " Launch " })).toMatchObject({
+      name: "Engineering", topicName: "Launch",
+    });
+    expect(new Store(selection).conversations(channel.id).map((group) => group.topicName)).toEqual(["General", "Launch", "Planning"]);
+    const events: string[] = [];
+    store.onChange((event) => {
+      if (event.type === "group.deleted") events.push(event.groupId);
+    });
+    expect(store.deleteConversation(topic.id)).toBe(true);
+    expect(events).toEqual([topic.id]);
+    expect(store.deleteConversation(topic.id)).toBe(false);
+    const restored = new Store(selection);
+    expect(restored.conversations(channel.id).map((group) => group.topicName)).toEqual(["General", "Planning"]);
+    expect(restored.group(channel.id)?.name).toBe("Engineering");
+    expect(restored.messagesFor(channel.threadId)[0]?.text).toBe("General history");
+    expect(restored.messagesFor(sibling.threadId)[0]?.text).toBe("Planning history");
+    expect(restored.messagesFor(topic.threadId)).toEqual([]);
+  });
+
   it("rejects invalid names, nonexistent parents and DM topics", () => {
     const store = new Store(selection);
     const bot = store.createBot();

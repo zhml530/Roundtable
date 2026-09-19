@@ -3868,7 +3868,13 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
           }
         }
       }
-      const local: Partial<Pick<GroupRecord, "unread" | "pinnedMessageId">> = {};
+      const local: Partial<Pick<GroupRecord, "unread" | "pinnedMessageId">> & { topicName?: string } = {};
+      if (body.topicName !== undefined) {
+        if (existing.id === channelId) return json(res, 400, { error: "General uses the channel name" });
+        const parsed = z.string().trim().min(1).max(100).safeParse(body.topicName);
+        if (!parsed.success) return json(res, 400, { error: "topic name must be a string between 1 and 100 characters" });
+        local.topicName = parsed.data;
+      }
       if ("unread" in patch) {
         if (typeof patch.unread !== "boolean") return json(res, 400, { error: "unread must be a boolean" });
         local.unread = patch.unread;
@@ -3933,15 +3939,15 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
     }
     m = path.match(/^\/api\/groups\/([\w-]+)$/);
     if (m && method === "DELETE") {
-      const group = store.group(m[1]);
+      const group = store.conversation(m[1]);
       if (!group) return json(res, 404, { error: "no such room" });
-      const conversations = store.conversations(group.id);
+      const conversations = (group.channelId ?? group.id) === group.id ? store.conversations(group.id) : [group];
       for (const conversation of conversations) {
         if (coordination?.active(conversation.id)) await coordination.cancel(conversation.id);
         for (const threadId of Object.values(conversation.memberSessions ?? {})) closeOpenApprovals(threadId);
         lastReply.delete(conversation.threadId);
       }
-      store.deleteGroup(group.id);
+      store.deleteConversation(group.id);
       for (const conversation of conversations) for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
         try {
           unlinkSync(join(dir, `${conversation.threadId}.ndjson`));

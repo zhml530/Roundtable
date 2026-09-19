@@ -579,7 +579,7 @@ export type Action =
   | {
       type: "patchGroup";
       groupId: string;
-      patch: Partial<Pick<Group, "name" | "bulletin" | "memberIds" | "pinnedMessageId" | "section">>;
+      patch: Partial<Pick<Group, "name" | "topicName" | "bulletin" | "memberIds" | "pinnedMessageId" | "section">>;
     }
   | { type: "deleteGroup"; groupId: string }
   | { type: "interruptGroup"; groupId: string }
@@ -1083,7 +1083,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case "patchGroup": {
       const target = state.groups.find((group) => group.id === action.groupId);
       const channelId = target?.channelId ?? action.groupId;
-      const { pinnedMessageId: _pin, ...shared } = action.patch;
+      const { pinnedMessageId: _pin, topicName: _topicName, ...shared } = action.patch;
       return {
         ...state,
         groups: state.groups.map((group) => group.id === action.groupId
