@@ -2357,9 +2357,9 @@ describe("message pages", () => {
 // A phone reconnects every time it unlocks, so "what did I miss?" has to
 // be answerable without re-downloading every transcript.
 describe("resumable event stream", () => {
-  /** any request that makes the server broadcast exactly one frame */
+  /** any request that makes the server broadcast exactly one bot frame */
   const nudge = async (botId: string) => {
-    const res = await api("PATCH", `/api/bots/${botId}`, { unread: true });
+    const res = await api("POST", `/api/bots/${botId}/read`);
     expect(res.status).toBe(200);
   };
 
@@ -2376,10 +2376,10 @@ describe("resumable event stream", () => {
 
       await nudge(botId);
       await nudge(botId);
-      // the PATCH response and the SSE frame travel on different sockets —
+      // the HTTP response and the SSE frame travel on different sockets —
       // wait for the frames themselves rather than assuming they landed
-      await stream.until(() => stream.frames.filter((f) => f.kind === "bot").length >= 2);
-      const bots = stream.frames.filter((f) => f.kind === "bot");
+      await stream.until(() => stream.frames.filter((f) => f.kind === "bot" && f.bot?.id === botId).length >= 2);
+      const bots = stream.frames.filter((f) => f.kind === "bot" && f.bot?.id === botId);
       expect(bots[1].seq).toBeGreaterThan(bots[0].seq);
     } finally {
       stream.close();
@@ -2393,7 +2393,7 @@ describe("resumable event stream", () => {
     const first = await openSse(`${BASE}/api/events`);
     const hello = await first.until((f) => f.kind === "hello");
     await nudge(botId);
-    const seen = await first.until((f) => f.kind === "bot");
+    const seen = await first.until((f) => f.kind === "bot" && f.bot?.id === botId);
     first.close();
     // a real client advances its cursor as frames arrive — resume from the
     // last frame it actually saw, not from where it connected
@@ -2409,9 +2409,12 @@ describe("resumable event stream", () => {
       // ...and an old cursor still replays them, in order, without a hydrate
       const back = await resumed.until((f) => f.kind === "hello");
       expect(back.resumed).toBe(true);
-      await resumed.until((f) => f.kind === "bot" && f.seq === seen.seq + 3);
-      const replayed = resumed.frames.filter((f) => f.kind === "bot").map((f) => f.seq);
-      expect(replayed).toEqual([seen.seq + 1, seen.seq + 2, seen.seq + 3]);
+      await resumed.until(() => resumed.frames.filter((f) => f.kind === "bot" && f.bot?.id === botId).length === 3);
+      const replayed = resumed.frames
+        .filter((f) => f.kind === "bot" && f.bot?.id === botId)
+        .map((f) => f.seq);
+      expect(replayed).toHaveLength(3);
+      expect(replayed.every((seq, index) => seq > seen.seq && (index === 0 || seq > replayed[index - 1]))).toBe(true);
     } finally {
       resumed.close();
     }
