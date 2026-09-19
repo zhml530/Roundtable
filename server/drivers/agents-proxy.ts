@@ -31,6 +31,7 @@ const BOT_ID = process.env.OMB_BOT_ID ?? "";
 const THREAD_ID = process.env.OMB_THREAD_ID ?? "";
 const TOKEN = process.env.OMB_COMMS_TOKEN ?? "";
 const DEPTH = Number(process.env.OMB_TURN_DEPTH ?? "0") || 0;
+const UNATTENDED = process.env.OMB_UNATTENDED === "1";
 
 const TOOLS = [
   {
@@ -159,7 +160,7 @@ async function callTool(name: string, args: Json): Promise<{ text: string; isErr
     if (!toBotId || !message) return { text: "ask_bot needs bot_id and message.", isError: true };
     const r = await api(`/api/internal/ask-bot`, {
       method: "POST",
-      body: JSON.stringify({ fromBotId: BOT_ID, fromThreadId: THREAD_ID, toBotId, message, depth: DEPTH }),
+      body: JSON.stringify({ fromBotId: BOT_ID, fromThreadId: THREAD_ID, toBotId, message, depth: DEPTH, unattended: UNATTENDED }),
     });
     if (r.busy) return { text: `That bot is busy right now — try again after it finishes.` };
     if (r.error) return { text: `Couldn't reach that bot: ${r.error}`, isError: true };
@@ -176,6 +177,7 @@ async function callTool(name: string, args: Json): Promise<{ text: string; isErr
       toBotId,
       message,
       depth: DEPTH,
+      unattended: UNATTENDED,
     };
     if (reason) body.reason = reason;
     const r = await api(`/api/internal/delegate-bot`, { method: "POST", body: JSON.stringify(body) });

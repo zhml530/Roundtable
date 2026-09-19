@@ -214,6 +214,7 @@ function agentsIntegration(botId: string, threadId: string, depth: number) {
       OMB_THREAD_ID: threadId,
       OMB_COMMS_TOKEN: COMMS_TOKEN,
       OMB_TURN_DEPTH: String(depth),
+      OMB_UNATTENDED: isUnattended(botId) ? "1" : "",
     },
   };
 }
@@ -230,7 +231,7 @@ function connectedAppsIntegration(botId: string, threadId: string) {
 /** Run a turn on `targetBotId` and resolve with its assistant text — the
  * synchronous half of ask_bot. Subscribes to the bus, folds assistant_text
  * for that thread, resolves on turn.completed (or a 4-min ceiling). */
-function askBotAndWait(targetBotId: string, message: string, depth: number, fromBotId?: string): Promise<string> {
+function askBotAndWait(targetBotId: string, message: string, depth: number, fromBotId?: string, sourceUnattended = false): Promise<string> {
   const target = store.bot(targetBotId);
   if (!target) return Promise.resolve("(no such bot)");
   store.ensureActiveTask(targetBotId);
@@ -256,7 +257,7 @@ function askBotAndWait(targetBotId: string, message: string, depth: number, from
     const timer = setTimeout(() => finish(text || "(timed out waiting for the bot to reply)"), 4 * 60_000);
     startTurn(targetBotId, message, {
       commsDepth: depth + 1,
-      unattended: isUnattended(fromBotId),
+      unattended: sourceUnattended || isUnattended(fromBotId),
     }).catch((err) =>
       finish(`(couldn't start that bot: ${err instanceof Error ? err.message : String(err)})`),
     );
@@ -1213,7 +1214,7 @@ bus.subscribe((event: RuntimeEvent) => {
 /** How a drained delegation becomes a real turn on the target. Shared by
  * the settle-time drain and the boot-time drain of what a previous process
  * left queued. */
-const runDelegatedTurn: Parameters<typeof drainDelegations>[3] = (toBotId, text, commsDepth, sourceThreadId, channel) => {
+const runDelegatedTurn: Parameters<typeof drainDelegations>[3] = (toBotId, text, commsDepth, sourceThreadId, channel, unattended) => {
     // startTurn REJECTS on an ordinary condition — busy target, deleted bot,
     // unavailable provider. Unhandled, that rejection is fatal to the
     // harness (Node's default), which in the packaged app kills the server
@@ -1244,7 +1245,7 @@ const runDelegatedTurn: Parameters<typeof drainDelegations>[3] = (toBotId, text,
     };
     return startTurn(toBotId, text, {
       commsDepth,
-      unattended: isUnattended(store.botByThread(sourceThreadId)?.id),
+      unattended: unattended || isUnattended(store.botByThread(sourceThreadId)?.id),
       // startTurn schedules provider/integration setup after marking the bot
       // busy. Those asynchronous setup failures do not emit turn.completed,
       // so clear the watch and report them through this callback too.
@@ -2923,7 +2924,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
         const channel = getOrCreateChannel(store, currentFrom, currentTarget);
         mirrorExchange(commsBus, currentFrom, currentTarget, message, channel, fromThreadId);
         const prefixed = `[Message from @${currentFrom.name}, another bot in this Roundtable workspace. Reply to them.]\n\n${message}`;
-        const reply = await askBotAndWait(toBotId, prefixed, depth, fromBotId);
+        const reply = await askBotAndWait(toBotId, prefixed, depth, currentFrom.id, body.unattended === true);
         mirrorReply(commsBus, currentTarget, reply, channel);
         return json(res, 200, { botName: currentTarget.name, text: reply });
       }
@@ -2955,7 +2956,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
         const result = queueDelegation(
           commsBus,
           from,
-          { toBotId, message, reason, depth },
+          { toBotId, message, reason, depth, unattended: body.unattended === true || isUnattended(from.id) },
           MAX_COMMS_DEPTH,
           fromThreadId,
         );

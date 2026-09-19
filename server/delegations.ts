@@ -25,6 +25,8 @@ export interface DelegationItem {
   toBotId: string;
   message: string;
   reason?: string;
+  /** The source turn was started by automation, so the peer turn inherits the approval gate. */
+  unattended?: boolean;
   /** The source bot's comms depth (0 for a user-initiated turn). The
    * delegated-to bot runs at `depth + 1`, which equals MAX_COMMS_DEPTH
    * (= 1) for a user turn — so the peer has no agents integration, and
@@ -76,6 +78,7 @@ export function _loadPending(): void {
           toBotId: item.toBotId,
           message: item.message,
           ...(typeof item.reason === "string" ? { reason: item.reason } : {}),
+          ...(item.unattended === true ? { unattended: true } : {}),
           depth: Math.max(0, Math.trunc(item.depth!)),
         }];
       });
@@ -157,6 +160,7 @@ export function drainDelegations(
     commsDepth: number,
     sourceThreadId: string,
     channel?: GroupRecord,
+    unattended?: boolean,
   ) => void | Promise<void>,
 ): void {
   if (drainingThreads.has(threadId)) return;
@@ -238,6 +242,7 @@ async function processOne(
     commsDepth: number,
     sourceThreadId: string,
     channel?: GroupRecord,
+    unattended?: boolean,
   ) => void | Promise<void>,
 ): Promise<void> {
   let sender = from;
@@ -297,7 +302,7 @@ async function processOne(
   mirrorExchange(bus, sender, target, item.message, channel, sourceThreadId);
   const reasonLine = item.reason ? `\n\n[Reason: ${item.reason}]` : "";
   const prefixed = `[Delegated by @${sender.name}, another bot in this Roundtable workspace. Do the work and reply directly.]\n\n${item.message}${reasonLine}`;
-  await runTarget(item.toBotId, prefixed, item.depth + 1, sourceThreadId, channel);
+  await runTarget(item.toBotId, prefixed, item.depth + 1, sourceThreadId, channel, item.unattended);
 }
 
 /** Test helper: how many items remain queued for a thread. */
@@ -310,4 +315,3 @@ export function _resetPending(): void {
   pendingDelegations.clear();
   drainingThreads.clear();
 }
-
