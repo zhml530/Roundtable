@@ -6,7 +6,6 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  Bug,
   Clock,
   CircleUserRound,
   FilePenLine,
@@ -971,39 +970,19 @@ export function ChatView({ bot }: { bot: Bot }) {
   useFocusMessage(bot.threadId, messages.length > 0);
   const pageState = state.messagePages[bot.threadId];
   const canLoadEarlier = pageState?.hasMore === true;
-
-  // Every desktop header is a drag region. Non-macOS overlays also need room
-  // for their caption buttons.
-  const platform = window.ogb?.platform;
-  const macInset = platform === "darwin";
-  const titleBarOverlay = Boolean(platform && platform !== "darwin");
-  const titleBarButtonSize = macInset ? "size-8" : "size-10";
-  // SAFETY: Electron supports this nonstandard CSS property, which React's type declarations omit.
-  const drag = platform ? ({ WebkitAppRegion: "drag" } as React.CSSProperties) : undefined;
-  // SAFETY: Electron supports this nonstandard CSS property, which React's type declarations omit.
-  const noDrag = platform ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties) : undefined;
+  const currentTask = bot.tasks?.find((task) => task.threadId === bot.threadId);
+  const conversationTitle = currentTask?.title.trim() || "New chat";
 
   return (
-    <main className="chat-area relative flex h-full min-w-0 flex-1 flex-col bg-app">
+    <main className="chat-area relative flex h-full min-w-0 flex-1 flex-col overflow-hidden rounded-tl-xl bg-app">
       {/* Call mode covers the thread while the bot is on the line */}
       <CallOverlay bot={bot} />
       {/* Header */}
-      <div
-        className={cn(
-          // @container so the chips on the right can fold to icon bubbles
-          // when the column is narrow (side panel open, small window)
-          "@container/chathead flex items-center justify-between px-5",
-          // Room for the drawer button, which overlays this corner below md.
-          "pl-11 md:pl-5",
-          titleBarOverlay ? "h-12 pr-[148px]" : macInset ? "h-12" : "py-3",
-        )}
-        style={drag}
-      >
-        <div className={cn("flex min-w-0 items-center gap-2.5 rounded-lg pr-1.5", !macInset && "py-1")}>
+      <div className="@container/chathead flex h-14 items-center justify-between border-b border-hairline/40 px-5 pl-11 md:pl-5">
+        <div className="flex min-w-0 items-center gap-2.5 rounded-lg pr-1.5">
           <button
             onClick={() => dispatch({ type: "showAgents", botId: bot.id })}
             className="-ml-1.5 flex size-9 shrink-0 items-center justify-center rounded-lg hover:bg-raised"
-            style={noDrag}
             title="Open agent profile"
             aria-label={`Open ${bot.name}'s profile`}
           >
@@ -1012,25 +991,31 @@ export function ChatView({ bot }: { bot: Bot }) {
               size={STANDARD_BOT_AVATAR_SIZE}
             />
           </button>
-          <span className="min-w-0 truncate select-none text-[15px] font-semibold text-ink">{bot.name}</span>
+          <span className="min-w-0 select-none">
+            <span className="block truncate text-[15px] font-semibold leading-[18px] text-ink" title={conversationTitle}>
+              {conversationTitle}
+            </span>
+            <span className="block truncate text-[12px] leading-4 text-ink-secondary" title={bot.name}>
+              {bot.name}
+            </span>
+          </span>
         </div>
-        <div className="flex shrink-0 items-center gap-1" style={noDrag}>
+        <div className="flex shrink-0 items-center gap-1">
           <button
             onClick={() => setFindOpen((open) => !open)}
             aria-label="Find in conversation"
             aria-pressed={findOpen}
             className={cn(
               "flex items-center justify-center rounded-md hover:bg-raised",
-              titleBarButtonSize,
+              "size-10",
               findOpen ? "text-accent" : "text-ink-secondary hover:text-ink",
             )}
             title="Find in conversation (⌘F)"
           >
             <Search size={18} />
           </button>
-          <ProfileButton botId={bot.id} compact={macInset} />
-          <InspectorButton compact={macInset} open={state.inspectorOpen} onClick={() => dispatch({ type: "toggleInspector" })} />
-          <UsageChip bot={bot} compact={macInset} />
+          <ProfileButton botId={bot.id} />
+          <UsageChip bot={bot} />
         </div>
       </div>
 
@@ -1147,14 +1132,14 @@ export function ChatView({ bot }: { bot: Bot }) {
   );
 }
 
-/** What the open task has spent — quiet until the first turn settles.
- * Click opens the bot's settings, where the Usage card has the breakdown. */
-function UsageChip({ bot, compact = false }: { bot: Bot; compact?: boolean }) {
+/** Usage belongs to the open conversation rather than the app-wide chrome.
+ * Click opens the owning agent, where the complete usage breakdown lives. */
+function UsageChip({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
-  const usage = bot.tasks?.find((t) => t.threadId === bot.threadId)?.usage;
+  const usage = bot.tasks?.find((task) => task.threadId === bot.threadId)?.usage;
   const text = usage ? usageChip(usage) : "";
   if (!usage || !text) return null;
-  const billing = state.instances.find((i) => i.instanceId === bot.modelSelection.instanceId)?.snapshot.billing;
+  const billing = state.instances.find((instance) => instance.instanceId === bot.modelSelection.instanceId)?.snapshot.billing;
   const detail = [
     `${usage.turns} turn${usage.turns === 1 ? "" : "s"}`,
     `${formatTokens(usage.input)} in · ${formatTokens(usage.output)} out`,
@@ -1162,16 +1147,14 @@ function UsageChip({ bot, compact = false }: { bot: Bot; compact?: boolean }) {
   ]
     .filter(Boolean)
     .join("\n");
-  // folded: one figure — cost when the engine reports one, else tokens
   const short = usage.costUsd !== null ? formatUsd(usage.costUsd) : formatTokens(usage.input + usage.output);
   return (
     <button
+      type="button"
       onClick={() => dispatch({ type: "showAgents", botId: bot.id })}
-      className={cn(
-        "whitespace-nowrap rounded-md px-3 text-[12px] tabular-nums text-ink-secondary hover:bg-raised hover:text-ink @max-4xl/chathead:px-2",
-        compact ? "h-8" : "h-10",
-      )}
+      className="h-10 whitespace-nowrap rounded-md px-3 text-[12px] tabular-nums text-ink-secondary hover:bg-raised hover:text-ink @max-4xl/chathead:px-2"
       title={detail}
+      aria-label={`Conversation usage: ${text}`}
     >
       <span className="@max-4xl/chathead:hidden">{text}</span>
       <span className="hidden @max-4xl/chathead:inline">{short}</span>
@@ -1179,37 +1162,16 @@ function UsageChip({ bot, compact = false }: { bot: Bot; compact?: boolean }) {
   );
 }
 
-function ProfileButton({ botId, compact = false }: { botId: string; compact?: boolean }) {
+function ProfileButton({ botId }: { botId: string }) {
   const { dispatch } = useStore();
   return (
     <button
       onClick={() => dispatch({ type: "showAgents", botId })}
       aria-label="Open agent profile"
-      className={cn(
-        "flex items-center justify-center rounded-md text-ink-secondary hover:bg-raised hover:text-ink",
-        compact ? "size-8" : "size-10",
-      )}
+      className="flex size-10 items-center justify-center rounded-md text-ink-secondary hover:bg-raised hover:text-ink"
       title="Profile"
     >
       <CircleUserRound size={18} strokeWidth={1.8} />
-    </button>
-  );
-}
-
-function InspectorButton({ open, onClick, compact = false }: { open: boolean; onClick: () => void; compact?: boolean }) {
-  return (
-    <button
-      onClick={onClick}
-      aria-label="Toggle inspector"
-      aria-pressed={open}
-      className={cn(
-        "flex items-center justify-center rounded-md hover:bg-raised",
-        compact ? "size-8" : "size-10",
-        open ? "text-accent" : "text-ink-secondary hover:text-ink",
-      )}
-      title="Runtime events and raw protocol for this thread"
-    >
-      <Bug size={18} />
     </button>
   );
 }

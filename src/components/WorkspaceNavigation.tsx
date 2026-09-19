@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   CheckCircle2, Plus, Search, Users, X,
@@ -7,7 +7,6 @@ import { formatTime, useStore, type Bot as Agent, type Group } from "@/state/sto
 import { BotAvatar, STANDARD_BOT_AVATAR_SIZE } from "./Avatar";
 import { cn } from "@/lib/cn";
 import { matchesChatFilter, type ChatFilter } from "@/lib/chat-filter";
-import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { BotPickerList } from "./BotPickerList";
 import { track } from "@/lib/analytics";
 import { useConversationMenus } from "./useConversationMenus";
@@ -104,12 +103,11 @@ function ConversationRow({ row, selected, onOpen, menuBindings }: {
   );
 }
 
-function NewChatMenu({ agents, open, onOpenChange, onSelect, noDragStyle }: {
+function NewChatMenu({ agents, open, onOpenChange, onSelect }: {
   agents: Agent[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSelect: (agent: Agent) => void;
-  noDragStyle?: React.CSSProperties;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -134,7 +132,7 @@ function NewChatMenu({ agents, open, onOpenChange, onSelect, noDragStyle }: {
   }, [onOpenChange, open]);
 
   return (
-    <div ref={menuRef} className="relative" style={noDragStyle}>
+    <div ref={menuRef} className="relative">
       <button
         ref={buttonRef}
         type="button"
@@ -238,10 +236,7 @@ function NewChannelDialog({ onClose }: { onClose: () => void }) {
  * provider cursor, so no history or session migration is required. */
 export function WorkspaceNavigation({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { state, dispatch } = useStore();
-  const { capabilities } = useDesktopCapabilities();
   const [view, setView] = useState<WorkspaceView>("chats");
-  const [paneOpen, setPaneOpen] = useState(true);
-  const paneId = useId();
   const [filter, setFilter] = useState<ChatFilter>("all");
   const [query, setQuery] = useState("");
   const [newChatOpen, setNewChatOpen] = useState(false);
@@ -299,11 +294,6 @@ export function WorkspaceNavigation({ open, onClose }: { open: boolean; onClose:
     setNewChatOpen(false);
     setView("chats");
   };
-  const desktop = capabilities.host.label !== "Browser";
-  // SAFETY: Electron implements this CSS property although React's declarations omit it.
-  const dragStyle = desktop ? ({ WebkitAppRegion: "drag" } as React.CSSProperties) : undefined;
-  // SAFETY: Interactive descendants of an Electron drag region must opt out explicitly.
-  const noDragStyle = desktop ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties) : undefined;
   const changeView = (nextView: WorkspaceView) => {
     menus.close();
     window.getSelection()?.removeAllRanges();
@@ -312,21 +302,18 @@ export function WorkspaceNavigation({ open, onClose }: { open: boolean; onClose:
     if (nextView === "agents") dispatch({ type: "showAgents" });
     else if (state.activeView === "agents" && state.selectedId) dispatch({ type: "select", id: state.selectedId });
     setView(nextView);
-    setPaneOpen(true);
-  };
-  const togglePane = () => {
-    menus.close();
-    setNewChatOpen(false);
-    setPaneOpen((value) => !value);
   };
 
   const title = view === "chats" ? "Chats" : view === "channels" ? "Channels" : view === "tasks" ? "Tasks" : "Agents";
   return (
-    <aside className={cn("z-40 flex h-full shrink-0 select-none border-r border-hairline/50 bg-panel max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:shadow-2xl transition-transform", open ? "max-md:translate-x-0" : "max-md:-translate-x-full", paneOpen ? "max-md:w-[344px] md:w-[352px]" : "w-16") }>
-      <WorkspaceRail view={view} paneOpen={paneOpen} paneId={paneId} onTogglePane={togglePane}
+    <aside className={cn(
+      "z-40 flex h-full w-[344px] shrink-0 select-none bg-panel max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:shadow-2xl md:w-[352px] transition-transform",
+      open ? "max-md:translate-x-0" : "max-md:-translate-x-full",
+    )}>
+      <WorkspaceRail view={view}
         onChangeView={changeView} onOpenSettings={() => dispatch({ type: "toggleAppSettings" })} />
-      <section id={paneId} hidden={!paneOpen} className={cn("min-w-0 flex-1 flex-col", paneOpen ? "flex" : "hidden")}>
-        <header className="flex h-14 items-center gap-2 px-4" style={dragStyle}>
+      <section className="flex min-w-0 flex-1 flex-col">
+        <header className="flex h-14 items-center gap-2 px-4">
           <h1 className="text-[15px] font-semibold text-ink">{title}</h1>
           <span className="flex-1" />
           {view === "chats" && (
@@ -335,16 +322,15 @@ export function WorkspaceNavigation({ open, onClose }: { open: boolean; onClose:
               open={newChatOpen}
               onOpenChange={setNewChatOpen}
               onSelect={createDirectChat}
-              noDragStyle={noDragStyle}
             />
           )}
           {view === "agents" && (
-            <button type="button" onClick={() => dispatch({ type: "startAgentCreate" })} className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink" style={noDragStyle} title="New Agent" aria-label="New Agent">
+            <button type="button" onClick={() => dispatch({ type: "startAgentCreate" })} className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink" title="New Agent" aria-label="New Agent">
               <Plus size={18} />
             </button>
           )}
           {view === "channels" && (
-            <button type="button" onClick={() => setNewChannelOpen(true)} className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink" style={noDragStyle} title="New Channel" aria-label="New Channel">
+            <button type="button" onClick={() => setNewChannelOpen(true)} className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink" title="New Channel" aria-label="New Channel">
               <Plus size={18} />
             </button>
           )}

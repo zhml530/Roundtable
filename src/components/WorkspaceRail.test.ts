@@ -3,27 +3,24 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { WorkspaceRail, type WorkspaceView } from "./WorkspaceRail";
 
-function renderRail(paneOpen: boolean, view: WorkspaceView = "chats") {
+function renderRail(view: WorkspaceView = "chats") {
   return renderToStaticMarkup(createElement(WorkspaceRail, {
-    paneOpen, paneId: "navigation-pane", view,
-    onTogglePane: vi.fn(), onChangeView: vi.fn(), onOpenSettings: vi.fn(),
+    view, onChangeView: vi.fn(), onOpenSettings: vi.fn(),
   }));
 }
 
 describe("workspace rail", () => {
-  it.each([
-    [true, "Hide navigation pane", "panel-left-close"],
-    [false, "Show navigation pane", "panel-left-open"],
-  ] as const)("exposes the %s pane state with a distinct toggle", (open, label, icon) => {
-    const markup = renderRail(open);
-    expect(markup).toContain(`aria-label="${label}"`);
-    expect(markup).toContain(`title="${label}"`);
-    expect(markup).toContain(`aria-expanded="${open}"`);
-    expect(markup).toContain('aria-controls="navigation-pane"');
-    expect(markup).toContain(`lucide-${icon}`);
+  it("keeps navigation permanently visible without a pane toggle", () => {
+    const markup = renderRail();
+    expect(markup).not.toContain("navigation pane");
+    expect(markup).not.toContain("panel-left");
     expect(markup).toContain('aria-label="Chats"');
     expect(markup).toContain('aria-label="Channels"');
     expect(markup).toContain('aria-label="Settings"');
+    expect(markup).toContain("pt-1.5");
+    expect(markup).toContain("bg-inset/50");
+    expect(markup).not.toContain("border-r");
+    expect(markup).not.toContain('aria-hidden="true" class="h-11 shrink-0"');
   });
 
   it.each([
@@ -32,7 +29,7 @@ describe("workspace rail", () => {
     ["tasks", "Tasks"],
     ["agents", "Agents"],
   ] as const)("uses the same icon-only selected treatment for %s", (view, label) => {
-    const markup = renderRail(true, view);
+    const markup = renderRail(view);
     const selectedButton = markup.match(new RegExp(`<button\\b[^>]*aria-label="${label}"[\\s\\S]*?<\\/button>`))?.[0];
     expect(selectedButton).toBeDefined();
     expect(selectedButton).toContain(`title="${label}"`);
@@ -49,7 +46,7 @@ describe("workspace rail", () => {
   });
 
   it("keeps an accessible Chats name but removes its selection treatment on other views", () => {
-    const markup = renderRail(false, "channels");
+    const markup = renderRail("channels");
     const chatButton = markup.match(/<button\b[^>]*aria-label="Chats"[\s\S]*?<\/button>/)?.[0];
     expect(chatButton?.replace(/<[^>]*>/g, "")).toBe("");
     expect(chatButton).toContain('title="Chats"');

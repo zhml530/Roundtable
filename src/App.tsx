@@ -12,7 +12,23 @@ import { UpdateBanner } from "@/components/UpdateBanner";
 import { DesktopCapabilitiesProvider } from "@/components/DesktopCapabilities";
 import { NoEngines } from "@/components/NoEngines";
 import { CommandPalette } from "@/components/CommandPalette";
+import { AppTitleBar } from "@/components/AppTitleBar";
 import { setTitleBarSurface } from "@/lib/skins";
+
+type ShellLocation = {
+  activeView: "chat" | "agents" | "team-map" | "routines" | "skill-recorder";
+  selectedId: string;
+  threadId?: string;
+};
+
+function sameShellLocation(left: ShellLocation | undefined, right: ShellLocation): boolean {
+  return Boolean(
+    left &&
+    left.activeView === right.activeView &&
+    left.selectedId === right.selectedId &&
+    left.threadId === right.threadId
+  );
+}
 
 const AgentProfilePage = lazy(() =>
   import("@/components/SettingsPanel").then((module) => ({ default: module.AgentProfilePage })),
@@ -103,6 +119,43 @@ function Shell() {
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const group = state.groups.find((g) => g.id === state.selectedId);
   const bot = group ? undefined : (state.bots.find((b) => b.id === state.selectedId) ?? state.bots[0]);
+  const location: ShellLocation = {
+    activeView: state.activeView,
+    selectedId: state.selectedId,
+    threadId: state.activeView === "chat" && bot && !group ? bot.threadId : undefined,
+  };
+  const [history, setHistory] = useState<{ entries: ShellLocation[]; index: number }>({ entries: [], index: -1 });
+
+  useEffect(() => {
+    if (location.activeView === "chat" && !location.selectedId) return;
+    setHistory((current) => {
+      if (sameShellLocation(current.entries[current.index], location)) return current;
+      const entries = [...current.entries.slice(0, current.index + 1), location];
+      return { entries: entries.slice(-50), index: Math.min(entries.length - 1, 49) };
+    });
+  }, [location.activeView, location.selectedId, location.threadId]);
+
+  const navigateHistory = (offset: -1 | 1) => {
+    const nextIndex = history.index + offset;
+    const target = history.entries[nextIndex];
+    if (!target) return;
+    setHistory((current) => ({ ...current, index: nextIndex }));
+    if (target.activeView === "chat") {
+      dispatch({ type: "select", id: target.selectedId });
+      const targetBot = state.bots.find((candidate) => candidate.id === target.selectedId);
+      if (target.threadId && targetBot && targetBot.threadId !== target.threadId) {
+        dispatch({ type: "switchTask", botId: targetBot.id, threadId: target.threadId });
+      }
+    } else if (target.activeView === "agents") {
+      dispatch({ type: "showAgents", botId: target.selectedId });
+    } else if (target.activeView === "team-map") {
+      dispatch({ type: "showTeamMap" });
+    } else if (target.activeView === "routines") {
+      dispatch({ type: "showRoutines" });
+    } else {
+      dispatch({ type: "showSkillRecorder" });
+    }
+  };
 
   // Nothing on this machine can run a bot. A missing cloud login does not
   // count — that CLI can still host a local model. Wait for the first
@@ -157,20 +210,21 @@ function Shell() {
 
   useLayoutEffect(() => {
     const backdropOpacity = state.appSettingsOpen ? 0.5 : 0;
-    if (state.inspectorOpen) {
-      setTitleBarSurface("panel", backdropOpacity);
-    } else if (state.activeView === "agents" || state.activeView === "team-map" || state.activeView === "routines" || state.activeView === "skill-recorder" || noEngines) {
-      setTitleBarSurface("app", backdropOpacity);
-    } else {
-      setTitleBarSurface("chat", backdropOpacity);
-    }
-  }, [state.activeView, state.appSettingsOpen, state.inspectorOpen, noEngines]);
+    setTitleBarSurface("panel", backdropOpacity);
+  }, [state.appSettingsOpen]);
 
   return (
     <div className="flex h-full flex-col">
       {/* fixed-position popup, bottom-left — outside the layout flow */}
       <UpdateBanner />
-      <div className="relative flex min-h-0 flex-1">
+      <AppTitleBar
+        bot={state.activeView === "chat" && !group ? bot : undefined}
+        canGoBack={history.index > 0}
+        canGoForward={history.index >= 0 && history.index < history.entries.length - 1}
+        onGoBack={() => navigateHistory(-1)}
+        onGoForward={() => navigateHistory(1)}
+      />
+      <div className="relative flex min-h-0 flex-1 bg-panel">
       <button
         type="button"
         ref={menuButtonRef}

@@ -1,5 +1,5 @@
 import {
-  Bot, CheckCircle2, Hash, MessageCircle, PanelLeftClose, PanelLeftOpen, Settings2,
+  Bot, CheckCircle2, Hash, MessageCircle, Settings2,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 
@@ -22,23 +22,13 @@ function NavButton({ active, icon: Icon, label, onClick }: {
   );
 }
 
-export function WorkspaceRail({ view, paneOpen, paneId, onTogglePane, onChangeView, onOpenSettings }: {
+export function WorkspaceRail({ view, onChangeView, onOpenSettings }: {
   view: WorkspaceView;
-  paneOpen: boolean;
-  paneId: string;
-  onTogglePane: () => void;
   onChangeView: (view: WorkspaceView) => void;
   onOpenSettings: () => void;
 }) {
-  const toggleLabel = paneOpen ? "Hide navigation pane" : "Show navigation pane";
-  const ToggleIcon = paneOpen ? PanelLeftClose : PanelLeftOpen;
   return (
-    <nav aria-label="Workspace" className="flex w-16 shrink-0 flex-col items-center gap-2 border-r border-hairline/40 px-2 pb-3 pt-3">
-      <button type="button" onClick={onTogglePane} title={toggleLabel} aria-label={toggleLabel}
-        aria-expanded={paneOpen} aria-controls={paneId}
-        className="mb-3 flex size-11 shrink-0 items-center justify-center rounded-lg text-ink-secondary transition-colors hover:bg-raised hover:text-ink">
-        <ToggleIcon size={22} />
-      </button>
+    <nav aria-label="Workspace" className="flex w-16 shrink-0 flex-col items-center gap-2 bg-inset/50 px-2 pb-3 pt-1.5">
       <NavButton active={view === "chats"} icon={MessageCircle} label="Chats" onClick={() => onChangeView("chats")} />
       <NavButton active={view === "channels"} icon={Hash} label="Channels" onClick={() => onChangeView("channels")} />
       <NavButton active={view === "tasks"} icon={CheckCircle2} label="Tasks" onClick={() => onChangeView("tasks")} />

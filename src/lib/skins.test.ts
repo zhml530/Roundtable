@@ -26,7 +26,7 @@ describe("skins", () => {
     const token = (name: string) => defaultBlock.match(new RegExp(`${name}:\\s*(#[0-9a-f]{6})`, "i"))?.[1];
     expect(electronMain).toContain(`backgroundColor: "${token("--color-app")}"`);
     expect(electronMain).toContain(
-      `titleBarOverlay: { color: "${token("--color-app")}", symbolColor: "${token("--color-ink")}", height: 48 }`,
+      `titleBarOverlay: { color: "${token("--color-app")}", symbolColor: "${token("--color-ink")}", height: 40 }`,
     );
   });
 

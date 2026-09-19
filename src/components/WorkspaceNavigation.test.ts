@@ -49,14 +49,15 @@ describe("channel rows in Chats", () => {
   describe("workspace rail controls", () => {
     beforeEach(() => { state = initialState; });
 
-    it("replaces the app badge with an accessible expanded-pane toggle", () => {
+    it("keeps the navigation pane visible without a collapse control", () => {
       const markup = renderToStaticMarkup(createElement(WorkspaceNavigation, { open: true, onClose: vi.fn() }));
       expect(markup).not.toContain(">R</div>");
-      expect(markup).toContain('aria-label="Hide navigation pane"');
-      expect(markup).toContain('aria-expanded="true"');
-      const controlledId = markup.match(/aria-controls="([^"]+)"/)?.[1];
-      expect(controlledId).toBeDefined();
-      expect(markup).toContain(`<section id="${controlledId}"`);
+      expect(markup).not.toContain("navigation pane");
+      expect(markup).not.toContain("panel-left");
+      expect(markup).toContain("md:w-[352px]");
+      expect(markup).toContain("<section");
+      expect(markup).not.toContain("after:bg-hairline");
+      expect(markup).not.toContain("border-r");
     });
 
     it("marks selected Chats with an outline icon and left indicator instead of a pill", () => {

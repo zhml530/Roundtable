@@ -3,7 +3,7 @@
 // does not become a wall of competing motion. User-created channels send every
 // message to the system Coordinator; DM rooms keep peer routing.
 import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Folder, FolderOpen, Loader2, MessageSquareReply, Pin, PinOff, Search, X } from "lucide-react";
+import { Folder, FolderOpen, Hash, Loader2, MessageSquareReply, Pin, PinOff, Search, Users, X } from "lucide-react";
 import {
   api,
   useStore,
@@ -36,6 +36,7 @@ import { shortPath } from "@/lib/short-path";
 import { hasVisibleStreamingText, showWorkingDots } from "@/lib/turn-tail";
 import { splitAttachedImages } from "@/lib/composer-attachments";
 import { channelViewportRows, isCoordinatorMessage } from "@/lib/channel-message-viewport";
+import { channelHeaderLabels } from "@/lib/conversation-header";
 export { isCoordinatorMessage } from "@/lib/channel-message-viewport";
 
 function dayLabel(at: number): string {
@@ -623,51 +624,34 @@ export function GroupView({ group }: { group: Group }) {
       </span>
     </span>
   );
-
-  const platform = window.ogb?.platform;
-  const titleBarOverlay = Boolean(platform && platform !== "darwin");
-  // SAFETY: Electron supports this nonstandard CSS property, which React's type declarations omit.
-  const drag = platform ? ({ WebkitAppRegion: "drag" } as React.CSSProperties) : undefined;
-  // SAFETY: Interactive controls must opt out of the Electron drag region.
-  const noDrag = platform ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties) : undefined;
+  const header = channelHeaderLabels(group);
 
   return (
-    <main className="chat-area relative flex h-full min-w-0 flex-1 flex-col bg-app">
+    <main className="chat-area relative flex h-full min-w-0 flex-1 flex-col overflow-hidden rounded-tl-xl bg-app">
       <GroupCallOverlay group={group} members={members} />
       {membersOpen && !group.dm && (
         <ManageMembersPanel group={group} onClose={closeMembers} triggerRef={membersTriggerRef} />
       )}
-      {/* Header: static member mauses; a ring + dot marks the working bot. */}
-      <div
-        className={cn(
-          "flex items-center justify-between px-5",
-          // Room for the drawer button, which overlays this corner below md.
-          "pl-11 md:pl-5",
-          titleBarOverlay ? "h-12 pr-[148px]" : "py-3",
-        )}
-        style={drag}
-      >
+      {/* A stable hash identifies Channels; DMs retain their member identity. */}
+      <div className="flex h-14 items-center justify-between border-b border-hairline/40 px-5 pl-11 md:pl-5">
         <div className="flex min-w-0 items-center gap-2.5">
           {group.dm ? (
             memberStack
           ) : (
-            <button
-              ref={membersTriggerRef}
-              type="button"
-              onClick={() => setMembersOpen(true)}
-              title="Manage members"
-              aria-label={`Manage members — ${members.length} ${members.length === 1 ? "bot" : "bots"} in this channel`}
-              className="flex shrink-0 items-center rounded-full hover:bg-raised/60"
-              style={noDrag}
-            >
-              {memberStack}
-            </button>
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-raised/70 text-ink-secondary" aria-hidden="true">
+              <Hash size={18} strokeWidth={1.8} />
+            </span>
           )}
-          <span className="min-w-0 truncate text-[15px] font-semibold text-ink" title={group.name}>
-            {group.topicName ? `${group.name} / ${group.topicName}` : group.name}
+          <span className="min-w-0 select-none">
+            <span className="block truncate text-[15px] font-semibold leading-[18px] text-ink" title={header.title}>
+              {header.title}
+            </span>
+            <span className="block truncate text-[12px] leading-4 text-ink-secondary" title={header.subtitle}>
+              {header.subtitle}
+            </span>
           </span>
         </div>
-        <div className="flex items-center gap-1.5" style={noDrag}>
+        <div className="flex items-center gap-1.5">
           <button
             type="button"
             onClick={() => setFindOpen((open) => !open)}
@@ -681,6 +665,18 @@ export function GroupView({ group }: { group: Group }) {
           >
             <Search size={18} />
           </button>
+          {!group.dm && (
+            <button
+              ref={membersTriggerRef}
+              type="button"
+              onClick={() => setMembersOpen(true)}
+              title="Manage members"
+              aria-label={`Manage members — ${members.length} ${members.length === 1 ? "bot" : "bots"} in this channel`}
+              className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink"
+            >
+              <Users size={18} />
+            </button>
+          )}
           {!setupPending && !group.dm && <RoomWorkingFolderChip group={group} onToggle={() => setFolderOpen((open) => !open)} />}
         </div>
       </div>

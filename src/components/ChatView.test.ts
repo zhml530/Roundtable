@@ -68,3 +68,26 @@ describe("ChatView command run summary", () => {
     expect(summary).not.toContain("1 completed");
   });
 });
+
+describe("ChatView conversation header", () => {
+  it("shows the active conversation title above the agent name", () => {
+    const bot: Bot = {
+      id: "agent", threadId: "current", name: "Github Copilot", title: "", description: "",
+      notifications: true, color: "blue", unread: false,
+      modelSelection: { instanceId: "test", model: "default" },
+      tasks: [
+        { threadId: "current", title: "Top N Chats on Startup", createdAt: 2 },
+        { threadId: "older", title: "Older chat", createdAt: 1 },
+      ],
+      messages: [],
+    };
+
+    const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
+    const conversationTitle = markup.indexOf(">Top N Chats on Startup<");
+    const agentName = markup.indexOf(">Github Copilot<");
+
+    expect(conversationTitle).toBeGreaterThan(-1);
+    expect(agentName).toBeGreaterThan(conversationTitle);
+    expect(markup).not.toContain("Older chat");
+  });
+});

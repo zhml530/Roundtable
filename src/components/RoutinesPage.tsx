@@ -618,31 +618,15 @@ export function RoutinesPage() {
       dispatch({ type: "markRoutineRunSeen", runId: item.run.id });
     }
   };
-  const platform = window.ogb?.platform;
-  const titleBarOverlay = Boolean(platform && platform !== "darwin");
-  // SAFETY: Electron supports this nonstandard CSS property, which React's type declarations omit.
-  const drag = platform ? ({ WebkitAppRegion: "drag" } as React.CSSProperties) : undefined;
-  // SAFETY: Interactive controls must opt out of the Electron drag region.
-  const noDrag = platform ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties) : undefined;
-
   return (
     <main className="flex h-full min-w-0 flex-1 flex-col bg-app">
-      <header
-        className={cn(
-          "shrink-0 px-5 pb-4 pt-4",
-          // Room for the drawer button, which overlays this corner below md.
-          "pl-11 md:pl-5",
-          // Keep actions out from under Electron's non-macOS caption buttons.
-          titleBarOverlay && "pr-[148px]",
-        )}
-        style={drag}
-      >
+      <header className="shrink-0 px-5 pb-4 pt-4 pl-11 md:pl-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <div className="flex items-center gap-2.5"><CalendarDays size={21} className="text-accent" /><h1 className="text-[20px] font-semibold tracking-tight text-ink">Tasks &amp; routines</h1></div>
             <p className="mt-1 text-[12.5px] text-ink-secondary">Routines start fresh agent tasks on a schedule.</p>
           </div>
-          <div className="flex items-center gap-2" style={noDrag}>
+          <div className="flex items-center gap-2">
             {running > 0 && <span className="flex items-center gap-1.5 rounded-full border border-accent/25 bg-accent/10 px-2.5 py-1.5 text-[11px] text-accent"><Loader2 size={12} className="animate-spin" />{running} active</span>}
             {unseenFailures > 0 && <span className="flex items-center gap-1.5 rounded-full border border-danger/25 bg-danger/10 px-2.5 py-1.5 text-[11px] text-danger"><CircleAlert size={12} />{unseenFailures} need attention</span>}
             {paused.length > 0 && <button onClick={() => setPausedOpen(true)} className="flex items-center gap-1.5 rounded-full border border-hairline/50 bg-panel px-2.5 py-1.5 text-[11px] text-ink-secondary hover:bg-raised hover:text-ink"><Pause size={12} />{paused.length} paused</button>}
@@ -652,7 +636,7 @@ export function RoutinesPage() {
         <div className="mt-3 rounded-xl border border-hairline/45 bg-panel/70 px-3.5 py-2.5 text-[11.5px] leading-relaxed text-ink-secondary">
           <strong className="font-medium text-ink">Task</strong> = one conversation and result. <strong className="font-medium text-ink">Routine</strong> = a reusable schedule that creates a fresh task each run, using that agent's model, tools, permissions, computer, and connected apps.
         </div>
-        <div className="mt-3 flex flex-wrap items-center gap-2" style={noDrag}>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
           <div className="flex items-center rounded-xl border border-hairline/50 bg-panel p-0.5">
             <button onClick={() => move(-1)} className="rounded-lg p-2 text-ink-secondary hover:bg-raised hover:text-ink" aria-label="Previous dates"><ChevronLeft size={16} /></button>
             <button onClick={goToday} className="px-2.5 py-1.5 text-[12px] font-medium text-ink hover:text-accent">Today</button>

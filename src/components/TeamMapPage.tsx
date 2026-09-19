@@ -312,22 +312,9 @@ export function TeamMapPage() {
 
   const working = bots.filter((bot) => bot.busy || bot.activity === "working").length;
   const waiting = bots.filter((bot) => bot.activity === "waiting-on-you").length;
-  const platform = window.ogb?.platform;
-  const titleBarOverlay = Boolean(platform && platform !== "darwin");
-  // SAFETY: Electron supports this nonstandard CSS property, which React's type declarations omit.
-  const drag = platform ? ({ WebkitAppRegion: "drag" } as React.CSSProperties) : undefined;
-  // SAFETY: Interactive controls must opt out of the Electron drag region.
-  const noDrag = platform ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties) : undefined;
-
   return (
     <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-app text-ink">
-      <header
-        className={cn(
-          "flex shrink-0 items-center justify-between border-b border-hairline/40 px-7 py-5 max-md:pl-12",
-          titleBarOverlay && "pr-[148px]",
-        )}
-        style={drag}
-      >
+      <header className="flex shrink-0 items-center justify-between border-b border-hairline/40 px-7 py-5 max-md:pl-12">
         <div>
           <div className="flex items-center gap-2.5">
             <Network size={20} className="text-accent" />
@@ -346,7 +333,6 @@ export function TeamMapPage() {
           className="rounded-lg border border-hairline/50 bg-card p-2 text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-50"
           aria-label="Refresh team map"
           title="Refresh"
-          style={noDrag}
         >
           <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
         </button>

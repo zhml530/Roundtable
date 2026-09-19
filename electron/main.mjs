@@ -496,7 +496,7 @@ ipcMain.on("desktop:title-bar-theme", (event, colors) => {
   if (process.platform === "darwin" || !sender || sender !== mainWindow || sender.isDestroyed()) return;
   const validColor = (value) => typeof value === "string" && /^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/i.test(value);
   if (!validColor(colors?.background) || !validColor(colors?.symbols)) return;
-  sender.setTitleBarOverlay({ color: colors.background, symbolColor: colors.symbols, height: 48 });
+  sender.setTitleBarOverlay({ color: colors.background, symbolColor: colors.symbols, height: 40 });
 });
 
 function createWindow() {
@@ -514,12 +514,12 @@ function createWindow() {
     // macOS keeps inset traffic lights. Windows and Linux share the custom
     // title-bar overlay so every platform uses the same draggable app header.
     ...(isMac
-      ? { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 16, y: 17 } }
+      ? { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 16, y: 13 } }
       : {
           titleBarStyle: "hidden",
           // Match the compact renderer header so the native caption buttons
           // and the adjacent toolbar share one vertical center.
-          titleBarOverlay: { color: "#dfeceb", symbolColor: "#14201f", height: 48 },
+          titleBarOverlay: { color: "#dfeceb", symbolColor: "#14201f", height: 40 },
         }),
     webPreferences: {
       contextIsolation: true,

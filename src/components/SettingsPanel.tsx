@@ -312,7 +312,6 @@ function MemoryCard({ bot }: { bot: Bot }) {
 
 export function AgentProfilePage({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
-  const { capabilities } = useDesktopCapabilities();
   const patch = (
     p: Partial<
       Pick<
@@ -334,13 +333,9 @@ export function AgentProfilePage({ bot }: { bot: Bot }) {
   ) => dispatch({ type: "updateBot", botId: bot.id, patch: p });
   const engine = state.instances.find((instance) => instance.instanceId === bot.modelSelection.instanceId);
   const canCoordinate = engine?.capabilities?.agentsMcp === true;
-  const desktop = capabilities.host.label !== "Browser";
-  // SAFETY: Electron implements this CSS property although React's declarations omit it.
-  const dragStyle = desktop ? ({ WebkitAppRegion: "drag" } as React.CSSProperties) : undefined;
-
   return (
     <main className="relative flex h-full min-w-0 flex-1 flex-col bg-app">
-      <div className="flex h-14 shrink-0 items-center border-b border-hairline/40 px-6" style={dragStyle}>
+      <div className="flex h-14 shrink-0 items-center border-b border-hairline/40 px-6">
         <div>
           <h1 className="text-[15px] font-semibold text-ink">{bot.name}</h1>
           <p className="text-[11px] text-ink-secondary">Agent profile</p>
@@ -535,7 +530,6 @@ export function AgentProfilePage({ bot }: { bot: Bot }) {
 
 export function NewAgentPage() {
   const { state, dispatch } = useStore();
-  const { capabilities } = useDesktopCapabilities();
   const firstEngine = state.instances.find((instance) => instance.snapshot.state === "available") ?? state.instances[0];
   const [draft, setDraft] = useState<Bot>(() => ({
     id: "draft-agent",
@@ -558,11 +552,6 @@ export function NewAgentPage() {
   const [error, setError] = useState<string | null>(null);
   const engine = state.instances.find((instance) => instance.instanceId === draft.modelSelection.instanceId);
   const canCoordinate = engine?.capabilities?.agentsMcp === true;
-  const desktop = capabilities.host.label !== "Browser";
-  // SAFETY: Electron implements these title-bar properties although React's declarations omit them.
-  const dragStyle = desktop ? ({ WebkitAppRegion: "drag" } as React.CSSProperties) : undefined;
-  // SAFETY: Buttons inside the Electron drag region must remain interactive.
-  const noDragStyle = desktop ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties) : undefined;
   const patchDraft = (patch: Partial<Bot>) => setDraft((current) => ({ ...current, ...patch }));
   const updateDraftName = (name: string) => setDraft((current) => ({
     ...current,
@@ -620,13 +609,13 @@ export function NewAgentPage() {
 
   return (
     <main className="relative flex h-full min-w-0 flex-1 flex-col bg-app">
-      <div className="flex h-14 shrink-0 items-center gap-3 border-b border-hairline/40 px-6" style={dragStyle}>
+      <div className="flex h-14 shrink-0 items-center gap-3 border-b border-hairline/40 px-6">
         <div className="min-w-0 flex-1">
           <h1 className="text-[15px] font-semibold text-ink">New Agent</h1>
           <p className="text-[11px] text-ink-secondary">Configure the complete profile before creating it.</p>
         </div>
-        <button type="button" onClick={() => dispatch({ type: "cancelAgentCreate" })} style={noDragStyle} className="rounded-lg px-3 py-2 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink">Cancel</button>
-        <button type="button" onClick={() => void create()} disabled={saving || !draft.name.trim() || !draft.modelSelection.instanceId || !draft.modelSelection.model} style={noDragStyle} className="flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-[13px] font-medium text-white hover:brightness-110 disabled:opacity-40">
+        <button type="button" onClick={() => dispatch({ type: "cancelAgentCreate" })} className="rounded-lg px-3 py-2 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink">Cancel</button>
+        <button type="button" onClick={() => void create()} disabled={saving || !draft.name.trim() || !draft.modelSelection.instanceId || !draft.modelSelection.model} className="flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-[13px] font-medium text-white hover:brightness-110 disabled:opacity-40">
           {saving && <Loader2 size={14} className="animate-spin" />} Create Agent
         </button>
       </div>
