@@ -3,12 +3,12 @@ import { createPortal } from "react-dom";
 import { useStore, type Bot, type Group } from "@/state/store";
 import { setBotArchived } from "@/lib/bot-archive";
 import { conversationMenuBindings, type ConversationMenuState, type ConversationMenuTarget } from "@/lib/conversation-menu";
-import { ArchivedBotsPanel, BotContextMenu, RoomContextMenu, SectionPicker } from "./Sidebar";
+import { ArchivedBotsPanel, BotContextMenu, RoomContextMenu, SectionPicker, type BotContextMenuVariant } from "./Sidebar";
 import { NewTopicDialog } from "./NewTopicDialog";
 
 export function useConversationMenus({ onTopicCreated, directChatVariant = "agent" }: {
   onTopicCreated?: (topic: Group) => void;
-  directChatVariant?: "agent" | "chat";
+  directChatVariant?: BotContextMenuVariant;
 } = {}) {
   const { state, dispatch } = useStore();
   const stateRef = useRef(state);

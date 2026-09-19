@@ -555,6 +555,9 @@ export function SectionPicker({
   );
 }
 
+/** Keep the default legacy menu for callers outside the workspace tabs. */
+export type BotContextMenuVariant = "agent" | "chat" | "agents" | "tasks";
+
 export function BotContextMenu({
   menu,
   onClose,
@@ -569,7 +572,7 @@ export function BotContextMenu({
   onArchive: (bot: Bot) => void;
   onMoveToSection: (botId: string) => void;
   threadId?: string;
-  variant?: "agent" | "chat";
+  variant?: BotContextMenuVariant;
   archivePending?: boolean;
 }) {
   const { state, dispatch } = useStore();
@@ -594,12 +597,13 @@ export function BotContextMenu({
     };
   }, [onClose]);
 
-  if (!bot || (threadId && !task)) return null;
+  if (!bot || (threadId && !task) || (variant === "tasks" && !task)) return null;
+  const compactChat = variant === "chat" || variant === "tasks";
   const visibleBotCount = state.bots.filter((candidate) => !candidate.hidden).length;
   const archiveBlocked = visibleBotCount <= 1 || archivePending;
   const archiveHint = visibleBotCount <= 1 ? "Keep at least one active bot" : undefined;
   // keep the menu on-screen near the click
-  const menuHeight = variant === "chat" && task ? 208 : task ? 500 : 380;
+  const menuHeight = variant === "agents" ? 92 : variant === "tasks" ? 170 : variant === "chat" && task ? 208 : task ? 500 : 380;
   const top = Math.max(8, Math.min(menu.y, window.innerHeight - menuHeight));
   const left = Math.max(8, Math.min(menu.x, window.innerWidth - 240));
   const saveRename = () => {
@@ -640,11 +644,11 @@ export function BotContextMenu({
     <div
       data-bot-menu
       ref={menuRef}
-      aria-label={task ? "Chat actions" : "Agent actions"}
+      aria-label={task && variant !== "agents" ? "Chat actions" : "Agent actions"}
       style={{ top, left }}
       className="fixed z-50 max-h-[calc(100dvh-16px)] w-[228px] overflow-y-auto rounded-xl border border-hairline/50 bg-card py-1.5 shadow-2xl shadow-black/60"
     >
-      {task && <>
+      {task && variant !== "agents" && <>
         {renaming ? (
           <form onSubmit={(event) => { event.preventDefault(); saveRename(); }} className="flex items-center gap-1 px-2 py-1">
             <input autoFocus aria-label="Chat name" value={draft}
@@ -658,19 +662,26 @@ export function BotContextMenu({
           </form>
         ) : (
           <button type="button" onClick={() => setRenaming(true)} className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink hover:bg-raised/70">
-            <Pencil size={16} className="text-ink-secondary" />{variant === "chat" ? "Rename Chat" : "Rename chat"}
+            <Pencil size={16} className="text-ink-secondary" />{compactChat ? "Rename Chat" : "Rename chat"}
           </button>
         )}
-        {item(<Trash2 size={16} />, variant === "chat" ? "Delete Chat" : "Delete chat", () =>
+        {item(<Trash2 size={16} />, compactChat ? "Delete Chat" : "Delete chat", () =>
           dispatch({ type: "deleteTask", botId: bot.id, threadId: task.threadId }),
         { danger: true, disabled: bot.busy && task.threadId === bot.threadId, hint: "Delete only this chat and its conversation" })}
-        {variant !== "chat" && divider("chat")}
+        {!compactChat && divider("chat")}
       </>}
-      {variant === "chat" && task ? [
-        item(<BellDot size={16} className="text-ink-secondary" />, "Mark message as unread", () =>
+      {variant === "agents" ? [
+        item(<Copy size={16} className="text-ink-secondary" />, "Duplicate", () =>
+          dispatch({ type: "duplicateBot", botId: bot.id }),
+        ),
+        item(<Trash2 size={16} />, "Delete", () =>
+          dispatch({ type: "deleteBot", botId: bot.id }), { danger: true },
+        ),
+      ] : compactChat && task ? [
+        variant === "chat" && item(<BellDot size={16} className="text-ink-secondary" />, "Mark message as unread", () =>
           dispatch({ type: "markTaskUnread", botId: bot.id, threadId: task.threadId }),
         ),
-        item(<Pencil size={16} className="text-ink-secondary" />, "Edit profile", () => {
+        item(<Pencil size={16} className="text-ink-secondary" />, variant === "tasks" ? "Edit Profile" : "Edit profile", () => {
           dispatch({ type: "showAgents", botId: bot.id });
         }),
         item(<ClipboardCopy size={16} className="text-ink-secondary" />, "Copy Conversation Id", () => {

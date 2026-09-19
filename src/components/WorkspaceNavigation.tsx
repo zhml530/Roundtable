@@ -244,7 +244,7 @@ export function WorkspaceNavigation({ open, onClose }: { open: boolean; onClose:
   const [pendingChatId, setPendingChatId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const menus = useConversationMenus({
-    directChatVariant: view === "chats" ? "chat" : "agent",
+    directChatVariant: view === "chats" ? "chat" : view === "tasks" ? "tasks" : view === "agents" ? "agents" : "agent",
     onTopicCreated: (topic) => {
       setExpanded((value) => ({ ...value, [topic.channelId ?? topic.id]: true }));
       onClose();

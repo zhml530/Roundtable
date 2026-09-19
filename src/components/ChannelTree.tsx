@@ -44,7 +44,6 @@ export function ChannelTree({ groups, expanded, selectedId, onToggle, onOpen, on
                 {topic.unread && <span className="size-2 shrink-0 rounded-full bg-accent" aria-label="Unread" />}
               </button>
             ))}
-            {!channel.dm && <p className="px-2 py-1 text-[11px] text-ink-secondary">Coordinator · {channel.memberIds.length} agents</p>}
           </div>
         )}
       </div>

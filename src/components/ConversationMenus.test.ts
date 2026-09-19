@@ -3,7 +3,7 @@ import { createElement, isValidElement, type ButtonHTMLAttributes, type MouseEve
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initialState, type Bot, type Group } from "@/state/store";
-import { BotContextMenu, RoomContextMenu } from "./Sidebar";
+import { BotContextMenu, RoomContextMenu, type BotContextMenuVariant } from "./Sidebar";
 import { WorkspaceNavigation } from "./WorkspaceNavigation";
 import { AgentChatEmptyState } from "./AgentChatEmptyState";
 import { ChannelTree } from "./ChannelTree";
@@ -77,7 +77,10 @@ function click(label: string) {
   // SAFETY: Menu action handlers take no arguments and never inspect the click event.
   props.onClick?.({} as MouseEvent<HTMLButtonElement>);
 }
-function renderDirect(threadId = "older", variant: "agent" | "chat" = "agent") {
+function labels() {
+  return buttons.map((props) => renderToStaticMarkup(createElement("button", props)).replace(/<[^>]*>/g, ""));
+}
+function renderDirect(threadId = "older", variant?: BotContextMenuVariant) {
   return renderToStaticMarkup(createElement(BotContextMenu, {
     menu: { botId: bot.id, x: 100, y: 100 }, threadId, variant, onClose, onArchive, onMoveToSection,
   }));
@@ -96,30 +99,39 @@ afterEach(() => vi.unstubAllGlobals());
 describe("restored conversation menus", () => {
   it("limits Chats direct menus to the five requested actions in order", () => {
     renderDirect("older", "chat");
-    expect(buttons.map((props) =>
-      renderToStaticMarkup(createElement("button", props)).replace(/<[^>]*>/g, ""),
-    )).toEqual(["Rename Chat", "Delete Chat", "Mark message as unread", "Edit profile", "Copy Conversation Id"]);
+    expect(labels()).toEqual(["Rename Chat", "Delete Chat", "Mark message as unread", "Edit profile", "Copy Conversation Id"]);
   });
 
-  it.each(["older", "current"])("targets the clicked %s chat and opens its owning profile", (threadId) => {
-    renderDirect(threadId, "chat");
-    click("Delete Chat");
-    click("Mark message as unread");
-    click("Edit profile");
-    click("Copy Conversation Id");
-    expect(dispatch.mock.calls.map(([action]) => action)).toEqual([
-      { type: "deleteTask", botId: "agent", threadId },
-      { type: "markTaskUnread", botId: "agent", threadId },
-      { type: "showAgents", botId: "agent" },
-    ]);
-    expect(writeText).toHaveBeenCalledWith(threadId);
-    expect(onClose).toHaveBeenCalledTimes(4);
+  it("limits Tasks menus to the four requested actions in order", () => {
+    renderDirect("older", "tasks");
+    expect(labels()).toEqual(["Rename Chat", "Delete Chat", "Edit Profile", "Copy Conversation Id"]);
   });
 
-  it.each(["denied", "unavailable"])("reports %s clipboard failures explicitly", async (failure) => {
+  it.each(["chat", "tasks"] as const)("targets each clicked thread and its owning profile in %s", (variant) => {
+    for (const threadId of ["older", "current"]) {
+      vi.clearAllMocks();
+      buttons.length = 0;
+      renderDirect(threadId, variant);
+      click("Delete Chat");
+      if (variant === "chat") click("Mark message as unread");
+      click(variant === "chat" ? "Edit profile" : "Edit Profile");
+      click("Copy Conversation Id");
+      expect(dispatch.mock.calls.map(([action]) => action)).toEqual([
+        { type: "deleteTask", botId: "agent", threadId },
+        ...(variant === "chat" ? [{ type: "markTaskUnread", botId: "agent", threadId }] : []),
+        { type: "showAgents", botId: "agent" },
+      ]);
+      expect(writeText).toHaveBeenCalledWith(threadId);
+      expect(onClose).toHaveBeenCalledTimes(variant === "chat" ? 4 : 3);
+    }
+  });
+
+  it.each([
+    ["chat", "denied"], ["chat", "unavailable"], ["tasks", "denied"], ["tasks", "unavailable"],
+  ] as const)("reports %s clipboard failures when %s", async (variant, failure) => {
     if (failure === "unavailable") vi.stubGlobal("navigator", {});
     else writeText.mockRejectedValueOnce(new Error("Permission denied"));
-    renderDirect("older", "chat");
+    renderDirect("older", variant);
     click("Copy Conversation Id");
     await Promise.resolve();
     expect(dispatch).toHaveBeenCalledWith({
@@ -127,13 +139,52 @@ describe("restored conversation menus", () => {
     });
   });
 
-  it("keeps the busy-chat deletion guard in Chats", () => {
+  it.each(["chat", "tasks"] as const)("keeps the busy-chat deletion guard in %s", (variant) => {
     state = { ...state, bots: [{ ...bot, busy: true }] };
-    renderDirect("current", "chat");
+    renderDirect("current", variant);
     expect(button("Delete Chat").disabled).toBe(true);
     buttons.length = 0;
-    renderDirect("older", "chat");
+    renderDirect("older", variant);
     expect(button("Delete Chat").disabled).toBe(false);
+  });
+
+  it.each([true, false])("limits Agents menus to existing lifecycle actions (has chats: %s)", (hasChats) => {
+    state = { ...state, bots: [{ ...bot, ...(hasChats ? {} : { threadId: "", tasks: [] }) }] };
+    const markup = renderToStaticMarkup(createElement(BotContextMenu, {
+      menu: { botId: bot.id, x: 100, y: 100 }, variant: "agents", onClose, onArchive, onMoveToSection,
+    }));
+    expect(labels()).toEqual(["Duplicate", "Delete"]);
+    expect(markup).toContain('aria-label="Agent actions"');
+    expect(button("Delete").className).toContain("text-danger");
+    click("Duplicate");
+    click("Delete");
+    expect(dispatch.mock.calls.map(([action]) => action)).toEqual([
+      { type: "duplicateBot", botId: "agent" },
+      { type: "deleteBot", botId: "agent" },
+    ]);
+    expect(onClose).toHaveBeenCalledTimes(2);
+    expect(onArchive).not.toHaveBeenCalled();
+    expect(onMoveToSection).not.toHaveBeenCalled();
+  });
+
+  it("keeps the default legacy agent menu unchanged without a thread", () => {
+    renderToStaticMarkup(createElement(BotContextMenu, {
+      menu: { botId: bot.id, x: 100, y: 100 }, onClose, onArchive, onMoveToSection,
+    }));
+    expect(labels()).toEqual(["Pin", "Move to section", "Mark as Unread", "Edit Profile",
+      "Duplicate", "Copy conversation ID", "Archive", "Delete"]);
+  });
+
+  it.each([
+    ["agents", 92], ["tasks", 170], ["chat", 208],
+  ] as const)("uses a compact height estimate for %s menus", (variant, height) => {
+    const markup = renderToStaticMarkup(createElement(BotContextMenu, {
+      menu: { botId: bot.id, x: 1100, y: 790 },
+      threadId: variant === "agents" ? undefined : "older",
+      variant, onClose, onArchive, onMoveToSection,
+    }));
+    expect(markup).toContain(`top:${800 - height}px`);
+    expect(markup).toContain("left:960px");
   });
 
   it("opening an inactive Chats row identifies the read target before switching", () => {
@@ -151,10 +202,8 @@ describe("restored conversation menus", () => {
 
   it("renders every original action with explicit agent scope and separate chat actions", () => {
     renderDirect();
-    for (const label of ["Rename chat", "Delete chat", "Pin agent", "Move agent to context",
-      "Mark agent as unread", "Edit Profile", "Duplicate agent", "Copy conversation ID", "Archive agent", "Delete agent"]) {
-      button(label);
-    }
+    expect(labels()).toEqual(["Rename chat", "Delete chat", "Pin agent", "Move agent to context",
+      "Mark agent as unread", "Edit Profile", "Duplicate agent", "Copy conversation ID", "Archive agent", "Delete agent"]);
   });
 
   it("deletes and copies the clicked inactive chat, not the agent's active chat", () => {
@@ -205,8 +254,14 @@ describe("restored conversation menus", () => {
     expect(dispatch).toHaveBeenCalledWith({ type: "updateBot", botId: "agent", patch: { pinned: false } });
   });
 
-  it("does not render actions for a deleted chat", () => {
-    expect(renderDirect("deleted")).toBe("");
+  it.each(["agent", "chat", "tasks"] as const)("does not render actions for a deleted chat in %s", (variant) => {
+    expect(renderDirect("deleted", variant)).toBe("");
+  });
+
+  it("does not fall back to legacy actions when Tasks has no thread", () => {
+    expect(renderToStaticMarkup(createElement(BotContextMenu, {
+      menu: { botId: bot.id, x: 100, y: 100 }, variant: "tasks", onClose, onArchive, onMoveToSection,
+    }))).toBe("");
   });
 
   it("restores channel rename, context, copy and delete actions", () => {

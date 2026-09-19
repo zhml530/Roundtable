@@ -25,6 +25,15 @@ const request = vi.fn(async ({ path, method, body }: { path: string; method: str
     if (path === "/api/instances") return { instances: [] };
     if (path === "/api/routines") return { routines: [], runs: [] };
     if (path === "/api/webhooks") return { webhooks: [], attempts: [] };
+    if (method === "POST" && path === "/api/bots") {
+      return { bot: { ...serverBot, id: "copy", name: "New Agent", threadId: "", tasks: [], messages: [] } };
+    }
+    if (method === "PATCH" && path === "/api/bots/copy") return { bot: JSON.parse(body!) };
+    if (method === "DELETE" && path.includes("/tasks/")) {
+      const threadId = path.split("/").at(-1)!.split("?")[0];
+      serverBot.tasks = serverBot.tasks!.filter((task) => task.threadId !== threadId);
+      return { bot: structuredClone(serverBot) };
+    }
     if (method === "PATCH" && path.includes("/tasks/")) {
       const task = serverBot.tasks!.find((item) => item.threadId === path.split("/").at(-1))!;
       if (failPatch) {
@@ -88,6 +97,10 @@ async function clickAction(label: string) {
   await act(() => button.click());
 }
 
+async function switchTab(tab: "Chats" | "Tasks" | "Agents") {
+  await act(() => document.querySelector<HTMLButtonElement>(`button[aria-label="${tab}"]`)!.click());
+}
+
 beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   request.mockClear();
@@ -114,17 +127,22 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-describe("Chats menu with the live store", () => {
-  it("keeps keyboard opening, initial focus and Escape focus restoration", async () => {
+describe("workspace menus with the live store", () => {
+  it.each(["Chats", "Tasks"] as const)("keeps keyboard opening, initial focus and Escape focus restoration in %s", async (tab) => {
+    await switchTab(tab);
     const opener = await openMenu("Older chat");
-    expect(menuLabels()).toEqual(["Rename Chat", "Delete Chat", "Mark message as unread", "Edit profile", "Copy Conversation Id"]);
+    expect(menuLabels()).toEqual(tab === "Chats"
+      ? ["Rename Chat", "Delete Chat", "Mark message as unread", "Edit profile", "Copy Conversation Id"]
+      : ["Rename Chat", "Delete Chat", "Edit Profile", "Copy Conversation Id"]);
     expect(document.activeElement?.textContent).toBe("Rename Chat");
     await act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
     expect(document.querySelector("[data-bot-menu]")).toBeNull();
     expect(document.activeElement).toBe(opener);
   });
 
-  it("submits the clicked inactive chat's edited title and closes the menu", async () => {
+  it.each(["Chats", "Tasks"] as const)("renames the clicked inactive chat and closes the menu in %s", async (tab) => {
+    await switchTab(tab);
+    request.mockClear();
     await openMenu("Older chat");
     await clickAction("Rename Chat");
     const input = document.querySelector<HTMLInputElement>('input[aria-label="Chat name"]')!;
@@ -139,14 +157,140 @@ describe("Chats menu with the live store", () => {
       path: "/api/bots/agent/tasks/older", method: "PATCH", body: JSON.stringify({ title: "Revised chat" }),
     }));
     expect(serverBot.tasks![1].title).toBe("Revised chat");
+    expect(serverBot.tasks![0].title).toBe("Current chat");
+    expect(latest.state.bots[0].threadId).toBe("current");
+    expect(request.mock.calls.filter(([call]) => call.method !== "GET")).toHaveLength(1);
     expect(document.querySelector("[data-bot-menu]")).toBeNull();
   });
 
-  it("retains the full Tasks menu after switching tabs", async () => {
-    await act(() => document.querySelector<HTMLButtonElement>('button[aria-label="Tasks"]')!.click());
+  it("switches between compact Tasks and unchanged Chats menus without leaving an overlay open", async () => {
+    await switchTab("Tasks");
     await openMenu("Older chat");
-    expect(menuLabels()).toEqual(["Rename chat", "Delete chat", "Pin agent", "Move agent to context",
-      "Mark agent as unread", "Edit Profile", "Duplicate agent", "Copy conversation ID", "Archive agent", "Delete agent"]);
+    expect(menuLabels()).toEqual(["Rename Chat", "Delete Chat", "Edit Profile", "Copy Conversation Id"]);
+    await switchTab("Chats");
+    expect(document.querySelector("[data-bot-menu]")).toBeNull();
+    await openMenu("Older chat");
+    expect(menuLabels()).toEqual(["Rename Chat", "Delete Chat", "Mark message as unread", "Edit profile", "Copy Conversation Id"]);
+  });
+
+  it("opens the inactive task's owning profile without switching chats or marking either chat read", async () => {
+    await act(() => {
+      onEvent({ kind: "bot", bot: { ...serverBot, id: "other", name: "Other Agent", threadId: "", tasks: [] } });
+    });
+    await act(() => latest.dispatch({ type: "select", id: "other" }));
+    serverBot.unread = true;
+    for (const task of serverBot.tasks!) {
+      task.unread = true;
+      task.unreadSource = "manual";
+    }
+    await act(() => onEvent({ kind: "bot", bot: structuredClone(serverBot) }));
+    await switchTab("Tasks");
+    request.mockClear();
+    await openMenu("Older chat");
+    expect(latest.state.selectedId).toBe("other");
+    await clickAction("Edit Profile");
+    expect(latest.state.activeView).toBe("agents");
+    expect(latest.state.selectedId).toBe("agent");
+    const owner = latest.state.bots.find((bot) => bot.id === "agent")!;
+    expect(owner.threadId).toBe("current");
+    expect(owner.tasks!.map((task) => task.unread)).toEqual([true, true]);
+    expect(serverBot.tasks!.map((task) => task.unread)).toEqual([true, true]);
+    expect(request).not.toHaveBeenCalled();
+    expect(document.querySelector("[data-bot-menu]")).toBeNull();
+  });
+
+  it("copies the clicked inactive Tasks conversation without opening or reading it", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    await switchTab("Tasks");
+    request.mockClear();
+    await openMenu("Older chat");
+    await clickAction("Copy Conversation Id");
+    expect(writeText).toHaveBeenCalledExactlyOnceWith("older");
+    expect(latest.state.bots[0].threadId).toBe("current");
+    expect(request).not.toHaveBeenCalled();
+    expect(document.querySelector("[data-bot-menu]")).toBeNull();
+  });
+
+  it("blocks busy active task deletion but deletes the clicked inactive conversation through the existing API", async () => {
+    serverBot.busy = true;
+    await act(() => onEvent({ kind: "bot", bot: structuredClone(serverBot) }));
+    await switchTab("Tasks");
+    request.mockClear();
+    await openMenu("Current chat");
+    const deletion = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-bot-menu] button"))
+      .find((button) => button.textContent === "Delete Chat")!;
+    expect(deletion.disabled).toBe(true);
+    await act(() => deletion.click());
+    expect(request).not.toHaveBeenCalled();
+    await openMenu("Older chat");
+    await clickAction("Delete Chat");
+    expect(request.mock.calls.filter(([call]) => call.method !== "GET").map(([call]) => call)).toEqual([
+      expect.objectContaining({ path: "/api/bots/agent/tasks/older?messages=10", method: "DELETE" }),
+    ]);
+    expect(latest.state.bots[0].tasks!.map((task) => task.threadId)).toEqual(["current"]);
+    expect(latest.state.bots[0].threadId).toBe("current");
+    expect(document.querySelector("[data-bot-menu]")).toBeNull();
+  });
+
+  it("duplicates the clicked agent using the existing create-and-copy-profile path", async () => {
+    await switchTab("Agents");
+    request.mockClear();
+    await openMenu("Agent");
+    expect(menuLabels()).toEqual(["Duplicate", "Delete"]);
+    expect(document.activeElement?.textContent).toBe("Duplicate");
+    await clickAction("Duplicate");
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({ path: "/api/bots", method: "POST" }));
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({
+      path: "/api/bots/copy", method: "PATCH",
+      body: JSON.stringify({
+        name: "Agent copy", title: "", description: "", notifications: true, modelSelection: serverBot.modelSelection,
+      }),
+    }));
+    expect(latest.state.bots.find((bot) => bot.id === "copy")?.name).toBe("Agent copy");
+    expect(document.querySelector("[data-bot-menu]")).toBeNull();
+  });
+
+  it("deletes a chatless agent using the existing agent deletion path", async () => {
+    serverBot.threadId = "";
+    serverBot.tasks = [];
+    await act(() => onEvent({ kind: "bot", bot: structuredClone(serverBot) }));
+    await switchTab("Agents");
+    request.mockClear();
+    await openMenu("Agent");
+    expect(menuLabels()).toEqual(["Duplicate", "Delete"]);
+    await clickAction("Delete");
+    expect(request).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ path: "/api/bots/agent", method: "DELETE" }));
+    expect(latest.state.bots).toHaveLength(0);
+    expect(document.querySelector("[data-bot-menu]")).toBeNull();
+  });
+
+  it.each(["Escape", "outside", "blur"] as const)("dismisses Tasks rename with %s without persisting", async (dismissal) => {
+    await switchTab("Tasks");
+    const opener = await openMenu("Older chat");
+    await clickAction("Rename Chat");
+    const input = document.querySelector<HTMLInputElement>('input[aria-label="Chat name"]')!;
+    expect(document.activeElement).toBe(input);
+    request.mockClear();
+    await act(() => {
+      if (dismissal === "outside") document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      else window.dispatchEvent(dismissal === "Escape"
+        ? new KeyboardEvent("keydown", { key: "Escape" }) : new Event("blur"));
+    });
+    expect(document.querySelector("[data-bot-menu]")).toBeNull();
+    if (dismissal === "Escape") expect(document.activeElement).toBe(opener);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("retains rename's IME Enter guard in Tasks", async () => {
+    await switchTab("Tasks");
+    await openMenu("Older chat");
+    await clickAction("Rename Chat");
+    const input = document.querySelector<HTMLInputElement>('input[aria-label="Chat name"]')!;
+    const composingEnter = new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true, cancelable: true });
+    await act(() => input.dispatchEvent(composingEnter));
+    expect(composingEnter.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(input);
   });
 
   it("persists manual marks through selected-chat announcements and hydration, then reads only that chat", async () => {
